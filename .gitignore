@@ -11,3 +11,4 @@
 # Benchmark output
 /results/*.csv
 /results/*.json
+/benchmarks/clean/
