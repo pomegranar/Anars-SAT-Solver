@@ -17,8 +17,7 @@
 
 use crate::cnf::{Cnf, Model};
 use crate::elim::{
-    Reconstruction, Working, eliminate_pure_literals, eliminate_var, resolvent_count,
-    unit_propagate,
+    Reconstruction, Working, eliminate_pure_literals, eliminate_var, unit_propagate,
 };
 use crate::lit::Var;
 
@@ -101,17 +100,30 @@ pub fn solve(cnf: &Cnf, clause_limit: usize) -> (DpOutcome, DpStats) {
                 stats,
             );
         }
-        // Occurrence lists accumulate tombstones fast under resolution.
-        w.compact_occurrences();
+        // Occurrence lists accumulate tombstones fast under resolution, but compaction is not
+        // cheap either; only pay for it once most entries are dead.
+        if w.tombstone_ratio() > 0.5 {
+            w.compact_occurrences();
+        }
     }
 }
 
-/// The variable whose elimination produces the fewest resolvents.
+/// The variable whose elimination looks cheapest.
+///
+/// Ranked by `|C_v| * |C_-v|`, the number of resolution attempts, rather than by the exact
+/// resolvent count. Counting exactly means performing every resolution for every candidate
+/// variable on every iteration, which costs more than the elimination it is choosing.
 fn cheapest_variable(w: &Working) -> Option<Var> {
+    let counts = w.literal_counts();
     (0..w.num_vars())
         .map(Var::from_index)
-        .filter(|&v| w.count(v.positive()) > 0 && w.count(v.negative()) > 0)
-        .min_by_key(|&v| resolvent_count(w, v))
+        .filter_map(|v| {
+            let pos = counts[v.positive().index()] as u64;
+            let neg = counts[v.negative().index()] as u64;
+            if pos > 0 && neg > 0 { Some((pos * neg, v)) } else { None }
+        })
+        .min()
+        .map(|(_, v)| v)
 }
 
 #[cfg(test)]

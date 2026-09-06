@@ -108,9 +108,30 @@ impl Working {
     }
 
     /// Number of live clauses containing `lit`.
+    ///
+    /// Deliberately does not build the list: this runs once per variable per elimination round,
+    /// and allocating there dominated the whole procedure.
     #[must_use]
     pub fn count(&self, lit: Lit) -> usize {
-        self.occurrences(lit).len()
+        self.occ[lit.index()]
+            .iter()
+            .filter(|&&c| self.clauses[c].as_ref().is_some_and(|cl| cl.contains(&lit)))
+            .count()
+    }
+
+    /// Tally of live occurrences for every literal, in one pass over the formula.
+    ///
+    /// Indexed by [`Lit::index`]. Computing all of them together is `O(total literals)`, where
+    /// asking per literal is `O(variables * total literals)`.
+    #[must_use]
+    pub fn literal_counts(&self) -> Vec<u32> {
+        let mut counts = vec![0_u32; 2 * self.num_vars];
+        for clause in self.clauses.iter().flatten() {
+            for &l in clause {
+                counts[l.index()] += 1;
+            }
+        }
+        counts
     }
 
     /// Iterates over the indices of live clauses.
@@ -132,6 +153,21 @@ impl Working {
             out.add_clause(self.clauses[i].as_ref().expect("live index"));
         }
         out
+    }
+
+    /// Ratio of occurrence-list entries that no longer name a live clause.
+    ///
+    /// Compaction is `O(total occurrences * clause length)`, so it is worth doing only once the
+    /// lists are mostly rubbish.
+    #[must_use]
+    pub fn tombstone_ratio(&self) -> f64 {
+        let total: usize = self.occ.iter().map(Vec::len).sum();
+        if total == 0 {
+            return 0.0;
+        }
+        let dead: usize =
+            self.occ.iter().flatten().filter(|&&c| self.clauses[c].is_none()).count();
+        dead as f64 / total as f64
     }
 
     /// Drops the occurrence lists' stale entries, bounding their growth over a long run.
@@ -243,12 +279,24 @@ impl Reconstruction {
 ///
 /// Returns `false` if a conflict is derived, which makes the formula unsatisfiable.
 pub fn unit_propagate(w: &mut Working, trail: &mut Reconstruction) -> bool {
-    loop {
-        let unit = w.live_indices().find_map(|i| match w.clause(i) {
+    // A worklist, seeded once. Rescanning the whole formula after every implication makes this
+    // quadratic in the clause count, which Davis-Putnam reaches quickly.
+    let mut queue: Vec<Lit> = w
+        .live_indices()
+        .filter_map(|i| match w.clause(i) {
             Some([l]) => Some(*l),
             _ => None,
-        });
-        let Some(lit) = unit else { return !w.has_empty_clause() };
+        })
+        .collect();
+    let mut value: Vec<Option<bool>> = vec![None; w.num_vars()];
+
+    while let Some(lit) = queue.pop() {
+        match value[lit.var().index()] {
+            Some(assigned) if assigned == lit.is_positive() => continue,
+            // Both polarities were derived as units: the formula is unsatisfiable.
+            Some(_) => return false,
+            None => value[lit.var().index()] = Some(lit.is_positive()),
+        }
 
         trail.fix(lit);
         for c in w.occurrences(lit) {
@@ -259,12 +307,15 @@ pub fn unit_propagate(w: &mut Working, trail: &mut Reconstruction) -> bool {
             let mut clause = w.clause(c).expect("live index").to_vec();
             clause.retain(|&l| l != !lit);
             w.remove(c);
-            if clause.is_empty() {
-                return false;
+            match clause.as_slice() {
+                [] => return false,
+                [single] => queue.push(*single),
+                _ => {}
             }
             w.add(clause);
         }
     }
+    !w.has_empty_clause()
 }
 
 /// Assigns every pure literal.
@@ -275,26 +326,30 @@ pub fn unit_propagate(w: &mut Working, trail: &mut Reconstruction) -> bool {
 pub fn eliminate_pure_literals(w: &mut Working, trail: &mut Reconstruction) -> usize {
     let mut fixed = 0;
     loop {
-        let mut found = None;
+        // One counting pass finds every pure literal at once, and removing them can only create
+        // more, so the round repeats until a pass finds none.
+        let counts = w.literal_counts();
+        let mut pure = Vec::new();
         for v in 0..w.num_vars() {
             let var = Var::from_index(v);
-            let pos = w.count(var.positive());
-            let neg = w.count(var.negative());
+            let pos = counts[var.positive().index()];
+            let neg = counts[var.negative().index()];
             if pos > 0 && neg == 0 {
-                found = Some(var.positive());
-                break;
-            }
-            if neg > 0 && pos == 0 {
-                found = Some(var.negative());
-                break;
+                pure.push(var.positive());
+            } else if neg > 0 && pos == 0 {
+                pure.push(var.negative());
             }
         }
-        let Some(lit) = found else { return fixed };
-        trail.fix(lit);
-        for c in w.occurrences(lit) {
-            w.remove(c);
+        if pure.is_empty() {
+            return fixed;
         }
-        fixed += 1;
+        for lit in pure {
+            trail.fix(lit);
+            for c in w.occurrences(lit) {
+                w.remove(c);
+            }
+            fixed += 1;
+        }
     }
 }
 

@@ -88,7 +88,7 @@ impl Default for Config {
             target_load: DEFAULT_TARGET_LOAD,
             pure_literals: true,
             preprocess: true,
-            dp_clause_limit: 2_000_000,
+            dp_clause_limit: 200_000,
             timeout: None,
             max_nodes: None,
         }
