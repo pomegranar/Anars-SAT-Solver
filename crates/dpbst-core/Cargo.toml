@@ -1,0 +1,35 @@
+[package]
+name = "dpbst-core"
+description = "DPLL + component-caching SAT solver core, with a hash table of binary search trees as the memo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+
+[features]
+default = ["pure-literals", "preprocess"]
+# Ablation switches: each names a technique that can be compiled out entirely so
+# benchmarks measure a build, not a runtime branch.
+pure-literals = []
+preprocess = []
+# Extra invariant checks in the cache and search state. Expensive; on by default in tests.
+paranoid = []
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "cache_bench"
+harness = false
+
+[[bench]]
+name = "solve_bench"
+harness = false
