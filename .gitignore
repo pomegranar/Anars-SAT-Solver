@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+
+# Reference solvers: sources + built binaries, fetched by scripts/fetch_tools.sh
+/tools/
+
+# Benchmark instances: ~7.5k files, fetched by scripts/fetch_benchmarks.sh
+/benchmarks/_dl/
+/benchmarks/suites/
+
+# Benchmark output
+/results/*.csv
+/results/*.json
