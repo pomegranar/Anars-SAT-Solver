@@ -27,6 +27,7 @@ Examples
 from __future__ import annotations
 
 import argparse
+import collections
 import concurrent.futures
 import csv
 import json
@@ -151,9 +152,50 @@ def run_one(
     return Result(solver, path.name, suite, status, seconds, peak_kb, timed_out)
 
 
+def header_matches_body(path: pathlib.Path) -> bool:
+    """Whether a DIMACS file's `p cnf` header agrees with the clauses it actually contains.
+
+    Ten files in the SATLIB corpus fail this, and each one silently changes the question being
+    asked. `dubois100.cnf` is missing two `0` terminators, so a strict parser merges four
+    clauses into two tautologies and the unsatisfiable instance becomes satisfiable. Every
+    `pret*.cnf` ends with a stray `0`, which is a legal *empty clause* and makes the instance
+    unsatisfiable by inspection. Benchmarking on those measures parser leniency, not solvers, so
+    they are skipped.
+    """
+    declared = None
+    clauses = dangling = 0
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped[0] == "c":
+            continue
+        if stripped[0] == "p":
+            parts = stripped.split()
+            if len(parts) >= 4:
+                declared = int(parts[3])
+            continue
+        if stripped[0] == "%":
+            break
+        for token in stripped.split():
+            try:
+                value = int(token)
+            except ValueError:
+                continue
+            if value == 0:
+                clauses += 1
+                dangling = 0
+            else:
+                dangling += 1
+    return declared is None or (clauses == declared and dangling == 0)
+
+
 def collect_instances(specs: list[str]) -> list[tuple[str, pathlib.Path]]:
     """Expands `suite:count` specifications into concrete instance paths."""
     instances: list[tuple[str, pathlib.Path]] = []
+    skipped = 0
     for spec in specs:
         name, _, count = spec.partition(":")
         directory = CLEAN / name
@@ -162,7 +204,14 @@ def collect_instances(specs: list[str]) -> list[tuple[str, pathlib.Path]]:
         files = sorted(directory.glob("*.cnf"))
         if count:
             files = files[: int(count)]
-        instances.extend((name, f) for f in files)
+        for f in files:
+            if header_matches_body(f):
+                instances.append((name, f))
+            else:
+                skipped += 1
+                print(f"skipping malformed instance: {name}/{f.name}", file=sys.stderr)
+    if skipped:
+        print(f"skipped {skipped} malformed instance(s)", file=sys.stderr)
     return instances
 
 
@@ -197,20 +246,34 @@ def summarize(results: list[Result], solvers: list[str], timeout: float) -> str:
     return "\n".join(lines)
 
 
-def check_agreement(results: list[Result]) -> list[str]:
-    """Reports any instance where two solvers returned conflicting verdicts."""
+def check_agreement(results: list[Result]) -> tuple[list[str], list[str]]:
+    """Finds instances where solvers returned conflicting verdicts.
+
+    Returns `(disagreements, ours)`. Every conflict is reported, but only those where a `dpbst`
+    configuration sided against the majority count as a failure of *this* project: the reference
+    solvers disagreeing with each other is a fact about them. splr 0.19, for example, reports
+    `par16-*` unsatisfiable where CaDiCaL, Kissat, MiniSat, varisat and dpbst all produce a
+    verified model.
+    """
     verdicts: dict[tuple[str, str], dict[str, str]] = {}
     for r in results:
         if r.status in ("SAT", "UNSAT"):
             verdicts.setdefault((r.suite, r.instance), {})[r.solver] = r.status
 
-    problems = []
+    disagreements: list[str] = []
+    ours: list[str] = []
     for (suite, instance), by_solver in sorted(verdicts.items()):
-        distinct = set(by_solver.values())
-        if len(distinct) > 1:
-            detail = ", ".join(f"{s}={v}" for s, v in sorted(by_solver.items()))
-            problems.append(f"{suite}/{instance}: {detail}")
-    return problems
+        if len(set(by_solver.values())) <= 1:
+            continue
+        detail = ", ".join(f"{s}={v}" for s, v in sorted(by_solver.items()))
+        line = f"{suite}/{instance}: {detail}"
+        disagreements.append(line)
+
+        tally = collections.Counter(by_solver.values())
+        majority, _ = tally.most_common(1)[0]
+        if any(s.startswith("dpbst") and v != majority for s, v in by_solver.items()):
+            ours.append(line)
+    return disagreements, ours
 
 
 def main() -> int:
@@ -275,11 +338,14 @@ def main() -> int:
             writer.writerow([r.solver, r.suite, r.instance, r.status, f"{r.seconds:.6f}", r.peak_kb])
     print(f"wrote {args.out}", file=sys.stderr)
 
-    problems = check_agreement(results)
+    problems, ours = check_agreement(results)
     if problems:
         print("\n!! VERDICT DISAGREEMENTS !!", file=sys.stderr)
         for p in problems:
-            print("  " + p, file=sys.stderr)
+            marker = "  <-- dpbst in the minority" if p in ours else ""
+            print("  " + p + marker, file=sys.stderr)
+        if not ours:
+            print("  (dpbst agreed with the majority everywhere)", file=sys.stderr)
 
     if args.mode == "time":
         table = summarize(results, args.solvers, args.timeout)
@@ -290,9 +356,10 @@ def main() -> int:
     else:
         solved = sum(1 for r in results if r.status in ("SAT", "UNSAT"))
         print(f"{solved}/{len(results)} runs produced a verdict; "
-              f"{len(problems)} disagreement(s)")
+              f"{len(problems)} disagreement(s), {len(ours)} involving dpbst")
 
-    return 1 if problems else 0
+    # Only a disagreement that dpbst is on the wrong side of is this project's failure.
+    return 1 if ours else 0
 
 
 if __name__ == "__main__":

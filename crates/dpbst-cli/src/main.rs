@@ -12,7 +12,7 @@ use dpbst_core::cnf::Model;
 use dpbst_core::config::{Algorithm, Config};
 use dpbst_core::search::heuristic::Heuristic;
 use dpbst_core::solver::{Outcome, SolveResult, solve};
-use dpbst_core::{Cnf, dimacs};
+use dpbst_core::dimacs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -117,7 +117,9 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<ExitCode> {
-    let cnf = read_input(cli.input.as_deref())?;
+    let parsed = read_input(cli.input.as_deref())?;
+    warn_on_header_mismatch(&parsed);
+    let cnf = parsed.cnf;
     let config = cli.to_config();
     let result = solve(&cnf, &config);
 
@@ -148,7 +150,38 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     ))
 }
 
-fn read_input(path: Option<&std::path::Path>) -> Result<Cnf> {
+/// Reports a `p cnf` header that disagrees with the clauses actually read.
+///
+/// Worth shouting about rather than ignoring. A mismatch usually means the file is malformed —
+/// in the SATLIB corpus, `dubois100.cnf` is missing two `0` terminators, so a strict parser
+/// merges four clauses into two tautologies and the instance silently becomes satisfiable, while
+/// every `pret*.cnf` ends with a stray `0` that is a perfectly legal *empty clause* and makes the
+/// instance trivially unsatisfiable. Both are answered correctly for the file as written, and
+/// both are the wrong question. A warning is the difference between noticing and not.
+fn warn_on_header_mismatch(parsed: &dimacs::ParsedCnf) {
+    if parsed.header_matches_body() {
+        return;
+    }
+    if let Some(declared) = parsed.declared_clauses
+        && declared != parsed.cnf.num_clauses()
+    {
+        eprintln!(
+            "c WARNING: header declares {declared} clauses but {} were read; \
+             the file may be malformed",
+            parsed.cnf.num_clauses()
+        );
+    }
+    if let Some(declared) = parsed.declared_vars
+        && declared < parsed.cnf.num_vars()
+    {
+        eprintln!(
+            "c WARNING: header declares {declared} variables but literals up to {} occur",
+            parsed.cnf.num_vars()
+        );
+    }
+}
+
+fn read_input(path: Option<&std::path::Path>) -> Result<dimacs::ParsedCnf> {
     let parsed = match path {
         Some(p) if p != std::path::Path::new("-") => {
             let bytes = std::fs::read(p).with_context(|| format!("cannot read {}", p.display()))?;
@@ -166,7 +199,7 @@ fn read_input(path: Option<&std::path::Path>) -> Result<Cnf> {
             dimacs::parse_bytes(&bytes).context("cannot parse standard input")?
         }
     };
-    Ok(parsed.cnf)
+    Ok(parsed)
 }
 
 /// Writes the DIMACS solution, wrapping the model across `v` lines the way `MiniSat` does.
