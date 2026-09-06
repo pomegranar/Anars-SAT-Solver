@@ -169,7 +169,13 @@ fn bench_skewed(c: &mut Criterion) {
     let hashes: Vec<u64> = keys.iter().map(|k| hash_key(k)).collect();
     // 90% of queries hit 5% of the keys.
     let plan: Vec<usize> = (0..ENTRIES as usize)
-        .map(|i| if i % 10 == 0 { i % ENTRIES as usize } else { (i * 7) % (ENTRIES as usize / 20) })
+        .map(|i| {
+            if i % 10 == 0 {
+                i % ENTRIES as usize
+            } else {
+                (i * 7) % (ENTRIES as usize / 20)
+            }
+        })
         .collect();
 
     let mut group = c.benchmark_group("cache/lookup-skewed");
@@ -222,13 +228,12 @@ fn bench_std_hashmap(c: &mut Criterion) {
         );
     });
 
-    let map: HashMap<Vec<u8>, Verdict> =
-        keys.iter().map(|k| (k.clone(), Verdict::Unsat)).collect();
+    let map: HashMap<Vec<u8>, Verdict> = keys.iter().map(|k| (k.clone(), Verdict::Unsat)).collect();
     group.bench_function("lookup-hit", |b| {
         b.iter(|| {
             let mut found = 0_usize;
             for key in &keys {
-                found += usize::from(map.get(key).is_some());
+                found += usize::from(map.contains_key(key));
             }
             black_box(found)
         });

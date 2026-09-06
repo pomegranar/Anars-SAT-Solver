@@ -215,7 +215,10 @@ impl SearchState {
     /// # Panics
     /// Panics in debug builds if the variable is already assigned.
     pub fn enqueue(&mut self, lit: Lit) {
-        debug_assert!(self.value(lit.var()).is_none(), "{lit:?} is already assigned");
+        debug_assert!(
+            self.value(lit.var()).is_none(),
+            "{lit:?} is already assigned"
+        );
         self.value[lit.var().index()] = Some(lit.is_positive());
         self.trail.push(lit);
         self.propagations += 1;
@@ -245,7 +248,10 @@ impl SearchState {
 
     #[inline]
     fn occ_range(&self, l: Lit) -> (usize, usize) {
-        (self.occ_bounds[l.index()] as usize, self.occ_bounds[l.index() + 1] as usize)
+        (
+            self.occ_bounds[l.index()] as usize,
+            self.occ_bounds[l.index() + 1] as usize,
+        )
     }
 
     /// Runs unit propagation to fixpoint.
@@ -254,7 +260,9 @@ impl SearchState {
     /// before doing anything else.
     pub fn propagate(&mut self) -> bool {
         while !self.conflict {
-            let Some(c) = self.unit_queue.pop() else { break };
+            let Some(c) = self.unit_queue.pop() else {
+                break;
+            };
             let c = c as usize;
             // The queue records clauses that *were* unit; by the time one is drained it may have
             // been satisfied or shortened further, so re-check rather than trust the entry.
@@ -294,7 +302,10 @@ impl SearchState {
     /// # Panics
     /// Panics if there is no open decision level.
     pub fn pop_level(&mut self) {
-        let target = self.trail_lim.pop().expect("pop_level without a matching push_level");
+        let target = self
+            .trail_lim
+            .pop()
+            .expect("pop_level without a matching push_level");
         self.unassign_to(target);
         self.conflict = false;
         self.unit_queue.clear();
@@ -327,8 +338,14 @@ impl SearchState {
     pub fn counters_are_consistent(&self) -> bool {
         (0..self.num_clauses()).all(|c| {
             let clause = self.clause(c);
-            let sat = clause.iter().filter(|l| self.value(l.var()) == Some(l.is_positive())).count();
-            let free = clause.iter().filter(|l| self.value(l.var()).is_none()).count();
+            let sat = clause
+                .iter()
+                .filter(|l| self.value(l.var()) == Some(l.is_positive()))
+                .count();
+            let free = clause
+                .iter()
+                .filter(|l| self.value(l.var()).is_none())
+                .count();
             sat == self.sat_count[c] as usize && free == self.unassigned_count[c] as usize
         })
     }
@@ -401,7 +418,9 @@ mod tests {
     #[test]
     fn backtracking_restores_counters_exactly() {
         let mut s = SearchState::new(&cnf(&[&[1, 2, 3], &[-1, -2], &[2, -3], &[-1, 3]]));
-        let before: Vec<_> = (0..s.num_clauses()).map(|c| (s.sat_count[c], s.unassigned_count[c])).collect();
+        let before: Vec<_> = (0..s.num_clauses())
+            .map(|c| (s.sat_count[c], s.unassigned_count[c]))
+            .collect();
 
         // Assigning 1 forces -2 and 3, and -2 then forces -3, which conflicts with 3. The point
         // here is not the verdict but that undoing it restores every counter exactly.
@@ -425,8 +444,13 @@ mod tests {
         s.pop_level();
         s.pop_level();
 
-        let after: Vec<_> = (0..s.num_clauses()).map(|c| (s.sat_count[c], s.unassigned_count[c])).collect();
-        assert_eq!(before, after, "counters must return to their initial values");
+        let after: Vec<_> = (0..s.num_clauses())
+            .map(|c| (s.sat_count[c], s.unassigned_count[c]))
+            .collect();
+        assert_eq!(
+            before, after,
+            "counters must return to their initial values"
+        );
         assert_eq!(s.trail_len(), 0);
         assert!(!s.in_conflict());
         assert!(s.counters_are_consistent());

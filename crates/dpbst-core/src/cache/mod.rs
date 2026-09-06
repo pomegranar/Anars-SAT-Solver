@@ -61,7 +61,9 @@ pub fn hash_key(bytes: &[u8]) -> u64 {
     if !tail.is_empty() {
         let mut buf = [0_u8; 8];
         buf[..tail.len()].copy_from_slice(tail);
-        h = (h ^ u64::from_le_bytes(buf)).wrapping_mul(K).rotate_left(31);
+        h = (h ^ u64::from_le_bytes(buf))
+            .wrapping_mul(K)
+            .rotate_left(31);
     }
 
     // SplitMix64 finaliser.
@@ -93,7 +95,11 @@ impl CacheStats {
     /// Fraction of lookups that hit, in `0.0..=1.0`.
     #[must_use]
     pub fn hit_rate(&self) -> f64 {
-        if self.lookups == 0 { 0.0 } else { self.hits as f64 / self.lookups as f64 }
+        if self.lookups == 0 {
+            0.0
+        } else {
+            self.hits as f64 / self.lookups as f64
+        }
     }
 }
 
@@ -197,6 +203,16 @@ impl<P: BucketPolicy> ComponentCache<P> {
         self.arena.memory_bytes() + self.buckets.capacity() * size_of::<NodeId>()
     }
 
+    /// Bytes attributable to entries that are still live.
+    ///
+    /// The memory budget is enforced against this rather than [`Self::memory_bytes`]: `Vec`
+    /// capacity never shrinks, so a budget checked against resident size could not be satisfied
+    /// once exceeded, and every later insert would trigger another full sweep.
+    #[must_use]
+    pub fn live_bytes(&self) -> usize {
+        self.arena.live_bytes(self.len) + self.buckets.len() * size_of::<NodeId>()
+    }
+
     /// Looks up a component key.
     ///
     /// On a hit the entry's activity counter is bumped, which is what keeps hot subproblems alive
@@ -243,7 +259,7 @@ impl<P: BucketPolicy> ComponentCache<P> {
         if self.len >= self.buckets.len().saturating_mul(self.target_load) {
             self.resize();
         }
-        if self.memory_bytes() >= self.budget_bytes {
+        if self.live_bytes() >= self.budget_bytes {
             self.sweep();
         }
 
@@ -273,6 +289,7 @@ impl<P: BucketPolicy> ComponentCache<P> {
     fn sweep(&mut self) {
         let ids = self.collect_entries();
         let mut survivors = Vec::with_capacity(ids.len());
+        let mut freed = 0_usize;
         for id in ids {
             let node = self.arena.get_mut(id);
             node.activity /= 2;
@@ -281,14 +298,28 @@ impl<P: BucketPolicy> ComponentCache<P> {
                 self.arena.free(id, witness_len);
                 self.len -= 1;
                 self.stats.evicted += 1;
+                freed += 1;
             } else {
                 survivors.push(id);
             }
         }
 
-        // A sweep that frees nothing would leave the table over budget and re-trigger on the very
-        // next insert. Raising the budget keeps the solver running instead of thrashing.
-        if survivors.len() == self.len && self.len > 0 {
+        // Reclaim the key bytes of everything just dropped; `free` can only mark them dead.
+        self.arena.compact_blob(&survivors, |key, verdict| {
+            key.len()
+                + if verdict == Verdict::Sat {
+                    witness_len_for(key)
+                } else {
+                    0
+                }
+        });
+
+        // If every entry survived, the table is entirely hot and sweeping again would achieve
+        // nothing but another full walk on the next insert. Raising the budget keeps the solver
+        // running rather than thrashing. Note this triggers only when *nothing* was freed:
+        // comparing survivor count against `self.len` would always match, because `self.len` is
+        // decremented as entries are dropped.
+        if freed == 0 && self.len > 0 {
             self.budget_bytes = self.budget_bytes.saturating_mul(2);
         }
 
@@ -368,8 +399,11 @@ impl<P: BucketPolicy> ComponentCache<P> {
             shape.max_depth = shape.max_depth.max(deepest);
         }
 
-        shape.mean_depth =
-            if self.len == 0 { 0.0 } else { depth_total as f64 / self.len as f64 };
+        shape.mean_depth = if self.len == 0 {
+            0.0
+        } else {
+            depth_total as f64 / self.len as f64
+        };
         shape
     }
 }
@@ -407,7 +441,10 @@ mod tests {
         let b = hash_key(&[0, 0, 0, 0]);
         assert_ne!(a, b);
         let differing_bits = (a ^ b).count_ones();
-        assert!((16..=48).contains(&differing_bits), "poor avalanche: {differing_bits} bits");
+        assert!(
+            (16..=48).contains(&differing_bits),
+            "poor avalanche: {differing_bits} bits"
+        );
     }
 
     #[test]
@@ -423,7 +460,11 @@ mod tests {
 
         let k1 = key_for(8, 1);
         let k2 = key_for(8, 2);
-        assert!(c.lookup(hash_key(&k1), &k1).is_none(), "{}: empty table", P::NAME);
+        assert!(
+            c.lookup(hash_key(&k1), &k1).is_none(),
+            "{}: empty table",
+            P::NAME
+        );
 
         c.insert(hash_key(&k1), &k1, Verdict::Sat, &[0b0000_1101]);
         c.insert(hash_key(&k2), &k2, Verdict::Unsat, &[]);
@@ -437,7 +478,11 @@ mod tests {
         assert_eq!(c.verdict(hit2), Verdict::Unsat, "{}", P::NAME);
 
         let absent = key_for(8, 99);
-        assert!(c.lookup(hash_key(&absent), &absent).is_none(), "{}", P::NAME);
+        assert!(
+            c.lookup(hash_key(&absent), &absent).is_none(),
+            "{}",
+            P::NAME
+        );
     }
 
     #[test]
@@ -452,25 +497,51 @@ mod tests {
         let mut c = cache::<P>();
         for i in 0..n {
             let k = key_for(16, i);
-            c.insert(hash_key(&k), &k, if i % 3 == 0 { Verdict::Sat } else { Verdict::Unsat }, &[
-                i as u8, 0,
-            ]);
+            c.insert(
+                hash_key(&k),
+                &k,
+                if i % 3 == 0 {
+                    Verdict::Sat
+                } else {
+                    Verdict::Unsat
+                },
+                &[i as u8, 0],
+            );
         }
         assert_eq!(c.len(), n as usize, "{}", P::NAME);
 
         for i in 0..n {
             let k = key_for(16, i);
-            let hit = c.lookup(hash_key(&k), &k).unwrap_or_else(|| panic!("{}: missing {i}", P::NAME));
-            let expected =
-                if i % 3 == 0 { Verdict::Sat } else { Verdict::Unsat };
-            assert_eq!(c.verdict(hit), expected, "{}: wrong verdict for {i}", P::NAME);
+            let hit = c
+                .lookup(hash_key(&k), &k)
+                .unwrap_or_else(|| panic!("{}: missing {i}", P::NAME));
+            let expected = if i % 3 == 0 {
+                Verdict::Sat
+            } else {
+                Verdict::Unsat
+            };
+            assert_eq!(
+                c.verdict(hit),
+                expected,
+                "{}: wrong verdict for {i}",
+                P::NAME
+            );
             if expected == Verdict::Sat {
-                assert_eq!(c.witness(hit), &[i as u8, 0], "{}: wrong witness for {i}", P::NAME);
+                assert_eq!(
+                    c.witness(hit),
+                    &[i as u8, 0],
+                    "{}: wrong witness for {i}",
+                    P::NAME
+                );
             }
         }
         for i in n..n * 2 {
             let k = key_for(16, i);
-            assert!(c.lookup(hash_key(&k), &k).is_none(), "{}: phantom hit {i}", P::NAME);
+            assert!(
+                c.lookup(hash_key(&k), &k).is_none(),
+                "{}: phantom hit {i}",
+                P::NAME
+            );
         }
     }
 
@@ -540,13 +611,121 @@ mod tests {
             c.lookup(hash_key(&hot), &hot);
         }
 
-        assert!(c.stats().sweeps > 0, "the budget should have forced at least one sweep");
-        assert!(c.stats().evicted > 0, "sweeps should have dropped cold entries");
+        assert!(
+            c.stats().sweeps > 0,
+            "the budget should have forced at least one sweep"
+        );
+        assert!(
+            c.stats().evicted > 0,
+            "sweeps should have dropped cold entries"
+        );
         assert!(
             c.lookup(hash_key(&hot), &hot).is_some(),
             "the repeatedly reused entry should have survived"
         );
-        assert!(c.len() < 5_000, "the table should be smaller than the number of inserts");
+        assert!(
+            c.len() < 5_000,
+            "the table should be smaller than the number of inserts"
+        );
+    }
+
+    /// The memory budget must actually bound the table.
+    ///
+    /// Regression test. The eviction sweep used to compare `survivors.len()` against `self.len`
+    /// to detect "freed nothing", but `self.len` is decremented as entries are dropped, so the
+    /// comparison always matched and the budget doubled on *every* sweep. The table then grew
+    /// without limit and `--cache-mb` did nothing.
+    #[test]
+    fn the_memory_budget_is_respected_under_sustained_pressure() {
+        const BUDGET: usize = 256 * 1024;
+        const INSERTS: u32 = 400_000;
+        let mut c = ComponentCache::<Avl>::new(BUDGET, DEFAULT_TARGET_LOAD);
+
+        for i in 0..INSERTS {
+            let k = key_for(64, i);
+            c.insert(hash_key(&k), &k, Verdict::Unsat, &[]);
+            // Warm one entry in ten. A sweep must then find both survivors *and* victims, which
+            // is the state the old guard mis-detected as "nothing could be freed".
+            if i % 10 == 0 {
+                c.lookup(hash_key(&k), &k);
+            }
+        }
+
+        assert!(
+            c.stats().sweeps > 0,
+            "sustained inserts should have forced sweeps"
+        );
+        assert!(
+            c.stats().evicted > 0,
+            "sweeps should have dropped the cold entries"
+        );
+        assert!(
+            c.live_bytes() <= BUDGET * 4,
+            "live bytes {} escaped the {BUDGET}-byte budget after {} sweeps \
+             ({} entries retained of {INSERTS})",
+            c.live_bytes(),
+            c.stats().sweeps,
+            c.len()
+        );
+    }
+
+    /// Freed key bytes have to be reclaimed, not merely marked dead.
+    #[test]
+    fn sweeping_reclaims_the_key_blob() {
+        let mut c = ComponentCache::<Avl>::new(128 * 1024, DEFAULT_TARGET_LOAD);
+        for i in 0..80_000_u32 {
+            let k = key_for(32, i);
+            c.insert(hash_key(&k), &k, Verdict::Unsat, &[]);
+        }
+        assert!(c.stats().sweeps > 0);
+
+        // Every surviving entry must still be readable after its bytes were moved.
+        let mut readable = 0;
+        for i in 0..80_000_u32 {
+            let k = key_for(32, i);
+            if let Some(node) = c.lookup(hash_key(&k), &k) {
+                assert_eq!(c.verdict(node), Verdict::Unsat);
+                readable += 1;
+            }
+        }
+        assert_eq!(
+            readable,
+            c.len(),
+            "every live entry must survive compaction intact"
+        );
+    }
+
+    /// Compaction moves witness bytes too, so a satisfiable entry must keep its witness.
+    #[test]
+    fn compaction_preserves_witnesses() {
+        let mut c = ComponentCache::<Avl>::new(128 * 1024, DEFAULT_TARGET_LOAD);
+        let witness_of = |i: u32| [i as u8, (i >> 8) as u8];
+
+        for i in 0..60_000_u32 {
+            let k = key_for(16, i);
+            c.insert(hash_key(&k), &k, Verdict::Sat, &witness_of(i));
+            // Keep the early entries hot so some of them survive the sweeps.
+            if i % 500 == 0 {
+                let hot = key_for(16, 0);
+                c.lookup(hash_key(&hot), &hot);
+            }
+        }
+        assert!(c.stats().sweeps > 0);
+
+        let mut checked = 0;
+        for i in 0..60_000_u32 {
+            let k = key_for(16, i);
+            if let Some(node) = c.lookup(hash_key(&k), &k) {
+                assert_eq!(c.verdict(node), Verdict::Sat);
+                assert_eq!(
+                    c.witness(node),
+                    witness_of(i),
+                    "witness corrupted for entry {i}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "expected some entries to survive");
     }
 
     #[test]

@@ -75,7 +75,9 @@ pub struct Searcher<'a, P: BucketPolicy> {
 
 impl<P: BucketPolicy> std::fmt::Debug for Searcher<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Searcher").field("counters", &self.counters).finish_non_exhaustive()
+        f.debug_struct("Searcher")
+            .field("counters", &self.counters)
+            .finish_non_exhaustive()
     }
 }
 
@@ -168,7 +170,8 @@ impl<'a, P: BucketPolicy> Searcher<'a, P> {
         }
 
         let Some(decision) =
-            self.decider.pick(&self.state, &self.store, comp, self.config.heuristic)
+            self.decider
+                .pick(&self.state, &self.store, comp, self.config.heuristic)
         else {
             // A component always carries at least one active clause, and an active clause always
             // has an unassigned literal, so this is unreachable in practice.
@@ -205,12 +208,8 @@ impl<'a, P: BucketPolicy> Searcher<'a, P> {
                     // The witness has to be read off before the decision level is popped.
                     self.capture(comp);
                     if self.config.cache {
-                        self.cache.insert(
-                            hash,
-                            self.store.key(comp),
-                            Verdict::Sat,
-                            &self.witness,
-                        );
+                        self.cache
+                            .insert(hash, self.store.key(comp), Verdict::Sat, &self.witness);
                     }
                     self.store.truncate(store_mark);
                     self.scope.truncate(scope_mark);
@@ -227,7 +226,8 @@ impl<'a, P: BucketPolicy> Searcher<'a, P> {
         }
 
         if self.config.cache {
-            self.cache.insert(hash, self.store.key(comp), Verdict::Unsat, &[]);
+            self.cache
+                .insert(hash, self.store.key(comp), Verdict::Unsat, &[]);
         }
         Answer::Unsat
     }

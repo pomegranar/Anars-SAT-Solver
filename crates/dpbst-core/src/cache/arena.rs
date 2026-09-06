@@ -94,7 +94,11 @@ impl Node {
     #[inline]
     #[must_use]
     pub const fn verdict(&self) -> Verdict {
-        if self.flags & FLAG_SAT != 0 { Verdict::Sat } else { Verdict::Unsat }
+        if self.flags & FLAG_SAT != 0 {
+            Verdict::Sat
+        } else {
+            Verdict::Unsat
+        }
     }
 }
 
@@ -120,7 +124,12 @@ impl NodeArena {
     /// Creates an empty arena.
     #[must_use]
     pub fn new() -> Self {
-        Self { nodes: Vec::new(), free: NodeId::NONE, blob: Vec::new(), dead_bytes: 0 }
+        Self {
+            nodes: Vec::new(),
+            free: NodeId::NONE,
+            blob: Vec::new(),
+            dead_bytes: 0,
+        }
     }
 
     /// Number of node slots ever allocated, including those currently free.
@@ -130,10 +139,26 @@ impl NodeArena {
         self.nodes.len()
     }
 
-    /// Bytes held by the node pool and the key blob.
+    /// Bytes actually resident: the node pool and the key blob, at their allocated capacity.
+    ///
+    /// This is the honest figure to report, but it is the wrong thing to enforce a budget
+    /// against, because a `Vec`'s capacity does not shrink when entries are freed. See
+    /// [`NodeArena::live_bytes`].
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
         self.nodes.capacity() * size_of::<Node>() + self.blob.capacity()
+    }
+
+    /// Bytes attributable to entries that are still live.
+    ///
+    /// Freed nodes return to the free list for reuse, and freed key bytes are charged to
+    /// `dead_bytes` until the next compaction, so neither counts here. This is what the memory
+    /// budget is enforced against: enforcing against capacity would mean that once the table
+    /// grew past the budget it could never get back under it, and every subsequent insert would
+    /// trigger another full sweep.
+    #[must_use]
+    pub fn live_bytes(&self, live_entries: usize) -> usize {
+        live_entries * size_of::<Node>() + (self.blob.len() - self.dead_bytes)
     }
 
     /// Blob bytes belonging to freed entries.
@@ -221,14 +246,38 @@ impl NodeArena {
 
     /// Returns a node to the free list and charges its bytes to `dead_bytes`.
     ///
-    /// The blob bytes are not reclaimed here; [`NodeArena::rebuild_from`] does that in bulk.
+    /// The blob bytes are not reclaimed here; [`NodeArena::compact_blob`] does that in bulk.
     pub fn free(&mut self, id: NodeId, witness_len: usize) {
         let n = self.nodes[id.index()];
         self.dead_bytes += n.key_len as usize
-            + if n.verdict() == Verdict::Sat { witness_len } else { 0 };
+            + if n.verdict() == Verdict::Sat {
+                witness_len
+            } else {
+                0
+            };
         self.nodes[id.index()].left = self.free;
         self.nodes[id.index()].right = NodeId::NONE;
         self.free = id;
+    }
+
+    /// Rebuilds the key blob to contain only the given live entries, rewriting their offsets.
+    ///
+    /// Without this the blob grows monotonically: `free` marks bytes dead but cannot move the
+    /// live ones. `entry_len` reports how many bytes an entry occupies given its key, which the
+    /// arena cannot work out for itself because the witness length is encoded in the key.
+    pub fn compact_blob(&mut self, live: &[NodeId], entry_len: impl Fn(&[u8], Verdict) -> usize) {
+        let mut packed = Vec::with_capacity(self.blob.len() - self.dead_bytes);
+        for &id in live {
+            let node = self.nodes[id.index()];
+            let start = node.key_off as usize;
+            let key = &self.blob[start..start + node.key_len as usize];
+            let total = entry_len(key, node.verdict());
+            let offset = packed.len() as u32;
+            packed.extend_from_slice(&self.blob[start..start + total]);
+            self.nodes[id.index()].key_off = offset;
+        }
+        self.blob = packed;
+        self.dead_bytes = 0;
     }
 
     /// Drops everything.
@@ -305,20 +354,32 @@ mod tests {
 
         let third = a.alloc(3, b"cc", Verdict::Unsat, &[]);
         assert_eq!(third, first, "the free slot should be recycled");
-        assert_eq!(a.capacity(), 2, "no growth while the free list is non-empty");
-        assert_eq!(a.key(second), b"bb", "recycling must not disturb live nodes");
+        assert_eq!(
+            a.capacity(),
+            2,
+            "no growth while the free list is non-empty"
+        );
+        assert_eq!(
+            a.key(second),
+            b"bb",
+            "recycling must not disturb live nodes"
+        );
         assert_eq!(a.key(third), b"cc");
     }
 
     #[test]
     fn free_list_threads_through_multiple_slots() {
         let mut a = NodeArena::new();
-        let ids: Vec<_> = (0..4).map(|i| a.alloc(i, b"x", Verdict::Unsat, &[])).collect();
+        let ids: Vec<_> = (0..4)
+            .map(|i| a.alloc(i, b"x", Verdict::Unsat, &[]))
+            .collect();
         for &id in &ids {
             a.free(id, 0);
         }
         // All four come back before any new slot is allocated.
-        let reused: Vec<_> = (0..4).map(|i| a.alloc(i, b"y", Verdict::Unsat, &[])).collect();
+        let reused: Vec<_> = (0..4)
+            .map(|i| a.alloc(i, b"y", Verdict::Unsat, &[]))
+            .collect();
         assert_eq!(a.capacity(), 4);
         let mut sorted = reused;
         sorted.sort_unstable();

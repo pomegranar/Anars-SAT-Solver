@@ -27,7 +27,10 @@ impl Var {
     #[inline]
     #[must_use]
     pub fn from_index(index: usize) -> Self {
-        assert!(index <= Self::MAX_INDEX, "variable index {index} out of range");
+        assert!(
+            index <= Self::MAX_INDEX,
+            "variable index {index} out of range"
+        );
         Self(index as u32)
     }
 

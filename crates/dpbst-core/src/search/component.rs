@@ -256,7 +256,8 @@ impl ComponentAnalyzer {
         let first = store.entries.len();
 
         for &seed in scope {
-            if state.value_of_index(seed as usize).is_some() || self.var_stamp[seed as usize] == self.stamp
+            if state.value_of_index(seed as usize).is_some()
+                || self.var_stamp[seed as usize] == self.stamp
             {
                 continue;
             }
@@ -494,8 +495,16 @@ mod tests {
         let range = a.analyze(&state, &all_vars(3), &mut store, false);
         assert_eq!(range.len(), 1);
         let c = ComponentRef(range.start as u32);
-        assert_eq!(store.vars(c), &[1, 2], "variable 1 is assigned, so it is gone");
-        assert_eq!(store.clauses(c), &[1], "clause 0 is satisfied, so it is gone");
+        assert_eq!(
+            store.vars(c),
+            &[1, 2],
+            "variable 1 is assigned, so it is gone"
+        );
+        assert_eq!(
+            store.clauses(c),
+            &[1],
+            "clause 0 is satisfied, so it is gone"
+        );
     }
 
     #[test]
@@ -606,6 +615,10 @@ mod tests {
         let (state, mut a, mut store) = setup(&f);
         let range = a.analyze(&state, &all_vars(f.num_vars()), &mut store, false);
         let key = store.key(ComponentRef(range.start as u32));
-        assert!(key.len() <= 64, "key of {} bytes for 20 vars + 40 clauses", key.len());
+        assert!(
+            key.len() <= 64,
+            "key of {} bytes for 20 vars + 40 clauses",
+            key.len()
+        );
     }
 }

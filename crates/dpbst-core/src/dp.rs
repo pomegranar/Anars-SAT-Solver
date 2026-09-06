@@ -74,7 +74,10 @@ pub fn solve(cnf: &Cnf, clause_limit: usize) -> (DpOutcome, DpStats) {
         if w.is_empty() {
             let mut model = Model::all_false(cnf.num_vars());
             trail.extend(&mut model);
-            debug_assert!(cnf.is_satisfied_by(&model), "DP produced a model that fails the input");
+            debug_assert!(
+                cnf.is_satisfied_by(&model),
+                "DP produced a model that fails the input"
+            );
             return (DpOutcome::Sat(model), stats);
         }
 
@@ -118,9 +121,13 @@ fn cheapest_variable(w: &Working) -> Option<Var> {
     (0..w.num_vars())
         .map(Var::from_index)
         .filter_map(|v| {
-            let pos = counts[v.positive().index()] as u64;
-            let neg = counts[v.negative().index()] as u64;
-            if pos > 0 && neg > 0 { Some((pos * neg, v)) } else { None }
+            let pos = u64::from(counts[v.positive().index()]);
+            let neg = u64::from(counts[v.negative().index()]);
+            if pos > 0 && neg > 0 {
+                Some((pos * neg, v))
+            } else {
+                None
+            }
         })
         .min()
         .map(|(_, v)| v)
@@ -161,12 +168,18 @@ mod tests {
 
     #[test]
     fn all_four_two_variable_clauses_are_unsatisfiable() {
-        assert_eq!(verdict(&cnf(&[&[1, 2], &[1, -2], &[-1, 2], &[-1, -2]])), Some(false));
+        assert_eq!(
+            verdict(&cnf(&[&[1, 2], &[1, -2], &[-1, 2], &[-1, -2]])),
+            Some(false)
+        );
     }
 
     #[test]
     fn a_satisfiable_instance_yields_a_checked_model() {
-        assert_eq!(verdict(&cnf(&[&[1, 2, 3], &[-1, 2], &[-2, 3], &[-3, 1]])), Some(true));
+        assert_eq!(
+            verdict(&cnf(&[&[1, 2, 3], &[-1, 2], &[-2, 3], &[-3, 1]])),
+            Some(true)
+        );
     }
 
     #[test]

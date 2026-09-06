@@ -142,7 +142,9 @@ impl Working {
     /// Whether the empty clause is present, which makes the formula unsatisfiable.
     #[must_use]
     pub fn has_empty_clause(&self) -> bool {
-        self.clauses.iter().any(|c| c.as_ref().is_some_and(std::vec::Vec::is_empty))
+        self.clauses
+            .iter()
+            .any(|c| c.as_ref().is_some_and(std::vec::Vec::is_empty))
     }
 
     /// Rebuilds a compact [`Cnf`] from the surviving clauses.
@@ -165,8 +167,12 @@ impl Working {
         if total == 0 {
             return 0.0;
         }
-        let dead: usize =
-            self.occ.iter().flatten().filter(|&&c| self.clauses[c].is_none()).count();
+        let dead: usize = self
+            .occ
+            .iter()
+            .flatten()
+            .filter(|&&c| self.clauses[c].is_none())
+            .count();
         dead as f64 / total as f64
     }
 
@@ -194,7 +200,11 @@ pub fn resolve(a: &[Lit], b: &[Lit], var: Var) -> Option<Vec<Lit>> {
     out.sort_unstable();
     out.dedup();
     // Complementary literals are adjacent after sorting: they differ only in bit 0.
-    if out.windows(2).any(|w| w[0] == !w[1]) { None } else { Some(out) }
+    if out.windows(2).any(|w| w[0] == !w[1]) {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// One undoable simplification.
@@ -515,7 +525,10 @@ mod tests {
         assert!(w.to_cnf().is_satisfied_by(&m));
 
         t.extend(&mut m);
-        assert!(original.is_satisfied_by(&m), "reconstruction must satisfy the original");
+        assert!(
+            original.is_satisfied_by(&m),
+            "reconstruction must satisfy the original"
+        );
     }
 
     #[test]

@@ -33,7 +33,13 @@ impl Rng {
     }
 }
 
-fn random_3sat_into(f: &mut Cnf, rng: &mut Rng, num_vars: usize, num_clauses: usize, offset: usize) {
+fn random_3sat_into(
+    f: &mut Cnf,
+    rng: &mut Rng,
+    num_vars: usize,
+    num_clauses: usize,
+    offset: usize,
+) {
     let mut clause: Vec<Lit> = Vec::with_capacity(3);
     for _ in 0..num_clauses {
         clause.clear();
@@ -52,7 +58,13 @@ fn random_3sat_into(f: &mut Cnf, rng: &mut Rng, num_vars: usize, num_clauses: us
 fn random_instance(num_vars: usize) -> Cnf {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     let mut f = Cnf::new(num_vars);
-    random_3sat_into(&mut f, &mut rng, num_vars, (num_vars as f64 * 4.26) as usize, 0);
+    random_3sat_into(
+        &mut f,
+        &mut rng,
+        num_vars,
+        (num_vars as f64 * 4.26) as usize,
+        0,
+    );
     f
 }
 
@@ -76,7 +88,13 @@ fn chain_instance(blocks: usize, per_block: usize) -> Cnf {
     let mut f = Cnf::new(blocks * per_block);
     for b in 0..blocks {
         let offset = b * per_block;
-        random_3sat_into(&mut f, &mut rng, per_block, (per_block as f64 * 4.0) as usize, offset);
+        random_3sat_into(
+            &mut f,
+            &mut rng,
+            per_block,
+            (per_block as f64 * 4.0) as usize,
+            offset,
+        );
         if b + 1 < blocks {
             let here = (offset + per_block) as i32;
             let next = here + 1;
@@ -106,14 +124,20 @@ fn pigeonhole(holes: usize) -> Cnf {
 
 /// Every bucket policy, end to end, on instances where the memo is actually used.
 fn bench_bucket_policies(c: &mut Criterion) {
-    let instances = [("pigeonhole-9", pigeonhole(8)), ("chain-8x24", chain_instance(8, 24))];
+    let instances = [
+        ("pigeonhole-9", pigeonhole(8)),
+        ("chain-8x24", chain_instance(8, 24)),
+    ];
 
     let mut group = c.benchmark_group("solve/bucket-policy");
     group.sample_size(20);
     for (name, formula) in &instances {
         for bucket in BucketKind::ALL {
             group.bench_with_input(BenchmarkId::new(*name, bucket), bucket, |b, &bucket| {
-                let config = Config { bucket, ..Config::default() };
+                let config = Config {
+                    bucket,
+                    ..Config::default()
+                };
                 b.iter(|| black_box(solve_here(formula, &config).outcome.exit_code()));
             });
         }
@@ -132,7 +156,13 @@ fn bench_memo_ablation(c: &mut Criterion) {
 
     let variants: [(&str, Config); 3] = [
         ("memo", Config::default()),
-        ("decompose-only", Config { cache: false, ..Config::default() }),
+        (
+            "decompose-only",
+            Config {
+                cache: false,
+                ..Config::default()
+            },
+        ),
         ("plain-dpll", Config::plain_dpll()),
     ];
 
@@ -150,20 +180,35 @@ fn bench_memo_ablation(c: &mut Criterion) {
 
 /// Davis-Putnam against DPLL, on instances small enough that resolution finishes.
 fn bench_algorithms(c: &mut Criterion) {
-    let instances = [("pigeonhole-6", pigeonhole(5)), ("random-40", random_instance(40))];
+    let instances = [
+        ("pigeonhole-6", pigeonhole(5)),
+        ("random-40", random_instance(40)),
+    ];
 
     let mut group = c.benchmark_group("solve/algorithm");
     group.sample_size(20);
     for (name, formula) in &instances {
         for algorithm in Algorithm::ALL {
-            group.bench_with_input(BenchmarkId::new(*name, algorithm), &algorithm, |b, &algorithm| {
-                let config = Config { algorithm, ..Config::default() };
-                b.iter(|| black_box(solve_here(formula, &config).outcome.exit_code()));
-            });
+            group.bench_with_input(
+                BenchmarkId::new(*name, algorithm),
+                &algorithm,
+                |b, &algorithm| {
+                    let config = Config {
+                        algorithm,
+                        ..Config::default()
+                    };
+                    b.iter(|| black_box(solve_here(formula, &config).outcome.exit_code()));
+                },
+            );
         }
     }
     group.finish();
 }
 
-criterion_group!(benches, bench_bucket_policies, bench_memo_ablation, bench_algorithms);
+criterion_group!(
+    benches,
+    bench_bucket_policies,
+    bench_memo_ablation,
+    bench_algorithms
+);
 criterion_main!(benches);

@@ -22,7 +22,11 @@ impl Cnf {
     /// The formula is trivially satisfiable until clauses are added.
     #[must_use]
     pub fn new(num_vars: usize) -> Self {
-        Self { num_vars, lits: Vec::new(), bounds: vec![0] }
+        Self {
+            num_vars,
+            lits: Vec::new(),
+            bounds: vec![0],
+        }
     }
 
     /// Creates an empty formula, pre-allocating for the given shape.
@@ -30,7 +34,11 @@ impl Cnf {
     pub fn with_capacity(num_vars: usize, num_clauses: usize, num_lits: usize) -> Self {
         let mut bounds = Vec::with_capacity(num_clauses + 1);
         bounds.push(0);
-        Self { num_vars, lits: Vec::with_capacity(num_lits), bounds }
+        Self {
+            num_vars,
+            lits: Vec::with_capacity(num_lits),
+            bounds,
+        }
     }
 
     /// Appends a clause verbatim, growing the variable count to cover its literals.
@@ -151,14 +159,22 @@ impl Cnf {
     #[must_use]
     pub fn first_falsified_clause(&self, model: &Model) -> Option<usize> {
         (0..self.num_clauses()).find(|&i| {
-            !self.clause(i).iter().any(|&l| model.value(l.var()) == l.is_positive())
+            !self
+                .clause(i)
+                .iter()
+                .any(|&l| model.value(l.var()) == l.is_positive())
         })
     }
 }
 
 impl fmt::Debug for Cnf {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Cnf({} vars, {} clauses)", self.num_vars, self.num_clauses())
+        write!(
+            f,
+            "Cnf({} vars, {} clauses)",
+            self.num_vars,
+            self.num_clauses()
+        )
     }
 }
 
@@ -189,7 +205,9 @@ impl Model {
     /// Creates an all-`false` assignment over `num_vars` variables.
     #[must_use]
     pub fn all_false(num_vars: usize) -> Self {
-        Self { values: vec![false; num_vars] }
+        Self {
+            values: vec![false; num_vars],
+        }
     }
 
     /// Creates a model from raw values, indexed by zero-based variable index.
@@ -241,7 +259,10 @@ impl Model {
     /// The literals of the model, in variable order.
     #[must_use]
     pub fn literals(&self) -> impl ExactSizeIterator<Item = Lit> + '_ {
-        self.values.iter().enumerate().map(|(i, &v)| Var::from_index(i).lit(v))
+        self.values
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| Var::from_index(i).lit(v))
     }
 }
 

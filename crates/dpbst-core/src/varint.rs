@@ -77,7 +77,11 @@ mod tests {
     #[test]
     fn truncated_input_is_rejected() {
         assert_eq!(read_u32(&[]), None);
-        assert_eq!(read_u32(&[0x80]), None, "continuation bit set but no follow-up byte");
+        assert_eq!(
+            read_u32(&[0x80]),
+            None,
+            "continuation bit set but no follow-up byte"
+        );
     }
 
     #[test]

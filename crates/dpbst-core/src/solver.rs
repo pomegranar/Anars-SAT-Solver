@@ -268,7 +268,10 @@ mod tests {
         assert_eq!(verdict(&Cnf::new(0), &c), Some(true));
         assert_eq!(verdict(&Cnf::new(5), &c), Some(true));
         assert_eq!(verdict(&cnf(&[&[1], &[-1]]), &c), Some(false));
-        assert_eq!(verdict(&cnf(&[&[1, 2], &[1, -2], &[-1, 2], &[-1, -2]]), &c), Some(false));
+        assert_eq!(
+            verdict(&cnf(&[&[1, 2], &[1, -2], &[-1, 2], &[-1, -2]]), &c),
+            Some(false)
+        );
     }
 
     #[test]
@@ -324,8 +327,15 @@ mod tests {
                 }
             }
             // Plain DPLL and Davis-Putnam must land on the same answer too.
-            assert_eq!(verdict(f, &Config::plain_dpll()), baseline, "instance {i}: plain DPLL");
-            let dp = Config { algorithm: Algorithm::DavisPutnam, ..Config::default() };
+            assert_eq!(
+                verdict(f, &Config::plain_dpll()),
+                baseline,
+                "instance {i}: plain DPLL"
+            );
+            let dp = Config {
+                algorithm: Algorithm::DavisPutnam,
+                ..Config::default()
+            };
             assert_eq!(verdict(f, &dp), baseline, "instance {i}: Davis-Putnam");
         }
     }
@@ -342,7 +352,10 @@ mod tests {
             f.add_dimacs_clause(&[-x, -z]);
             f.add_dimacs_clause(&[-y, -z]);
         }
-        let config = Config { preprocess: false, ..Config::default() };
+        let config = Config {
+            preprocess: false,
+            ..Config::default()
+        };
         let r = solve_here(&f, &config);
         assert!(matches!(r.outcome, Outcome::Sat(_)));
         r.verify(&f).expect("model must satisfy");
@@ -392,7 +405,13 @@ mod tests {
         );
 
         // And with the memo off, the same instance must take strictly more search nodes.
-        let without = solve_here(&f, &Config { cache: false, ..config });
+        let without = solve_here(
+            &f,
+            &Config {
+                cache: false,
+                ..config
+            },
+        );
         let plain = without.stats.search.expect("search ran");
         assert!(
             plain.nodes > stats.nodes,
@@ -412,7 +431,11 @@ mod tests {
             f.add_dimacs_clause(&[i, i % 30 + 1]);
             f.add_dimacs_clause(&[-i, -(i % 30 + 1)]);
         }
-        let config = Config { max_nodes: Some(1), preprocess: false, ..Config::default() };
+        let config = Config {
+            max_nodes: Some(1),
+            preprocess: false,
+            ..Config::default()
+        };
         let r = solve_here(&f, &config);
         // Either it aborted, or it was settled outright before the limit could bite.
         if let Outcome::Unknown(reason) = r.outcome {
@@ -429,7 +452,13 @@ mod tests {
             f.add_dimacs_clause(&[-i, i + 1]);
         }
         f.add_dimacs_clause(&[1]);
-        let r = solve(&f, &Config { preprocess: false, ..Config::default() });
+        let r = solve(
+            &f,
+            &Config {
+                preprocess: false,
+                ..Config::default()
+            },
+        );
         assert!(matches!(r.outcome, Outcome::Sat(_)));
         r.verify(&f).expect("model must satisfy");
     }

@@ -121,7 +121,9 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     let config = cli.to_config();
     let result = solve(&cnf, &config);
 
-    if cli.verify && let Err(clause) = result.verify(&cnf) {
+    if cli.verify
+        && let Err(clause) = result.verify(&cnf)
+    {
         bail!(
             "model verification failed: clause {clause} ({:?}) is not satisfied",
             cnf.clause(clause)
@@ -149,8 +151,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
 fn read_input(path: Option<&std::path::Path>) -> Result<Cnf> {
     let parsed = match path {
         Some(p) if p != std::path::Path::new("-") => {
-            let bytes = std::fs::read(p)
-                .with_context(|| format!("cannot read {}", p.display()))?;
+            let bytes = std::fs::read(p).with_context(|| format!("cannot read {}", p.display()))?;
             dimacs::parse_bytes(&bytes).with_context(|| format!("cannot parse {}", p.display()))?
         }
         _ => {
@@ -159,7 +160,9 @@ fn read_input(path: Option<&std::path::Path>) -> Result<Cnf> {
                 bail!("no input file given and standard input is a terminal");
             }
             let mut bytes = Vec::new();
-            stdin.read_to_end(&mut bytes).context("cannot read standard input")?;
+            stdin
+                .read_to_end(&mut bytes)
+                .context("cannot read standard input")?;
             dimacs::parse_bytes(&bytes).context("cannot parse standard input")?
         }
     };
@@ -207,12 +210,19 @@ fn write_model<W: Write>(out: &mut W, model: &Model) -> io::Result<()> {
 
 fn write_stats<W: Write>(out: &mut W, result: &SolveResult) -> io::Result<()> {
     let s = &result.stats;
-    writeln!(out, "c ---------------------------------------------------------------")?;
+    writeln!(
+        out,
+        "c ---------------------------------------------------------------"
+    )?;
     writeln!(out, "c algorithm            : {}", s.algorithm)?;
     if let Some(bucket) = s.bucket {
         writeln!(out, "c bucket policy        : {bucket}")?;
     }
-    writeln!(out, "c input                : {} vars, {} clauses", s.input_vars, s.input_clauses)?;
+    writeln!(
+        out,
+        "c input                : {} vars, {} clauses",
+        s.input_vars, s.input_clauses
+    )?;
 
     if let Some(p) = &s.preprocess {
         writeln!(
@@ -273,8 +283,15 @@ fn write_stats<W: Write>(out: &mut W, result: &SolveResult) -> io::Result<()> {
         writeln!(out, "c peak clauses         : {}", dp.peak_clauses)?;
     }
 
-    writeln!(out, "c cpu time             : {:.4} s", s.elapsed.as_secs_f64())?;
-    writeln!(out, "c ---------------------------------------------------------------")
+    writeln!(
+        out,
+        "c cpu time             : {:.4} s",
+        s.elapsed.as_secs_f64()
+    )?;
+    writeln!(
+        out,
+        "c ---------------------------------------------------------------"
+    )
 }
 
 /// Renders the run as one JSON object.
@@ -302,13 +319,21 @@ fn json_stats(result: &SolveResult, cli: &Cli) -> String {
     field(&mut json, "bucket", format!("\"{}\"", cli.bucket));
     field(&mut json, "heuristic", format!("\"{}\"", cli.heuristic));
     field(&mut json, "cache", (!cli.no_cache).to_string());
-    field(&mut json, "elapsed_s", format!("{:.6}", s.elapsed.as_secs_f64()));
+    field(
+        &mut json,
+        "elapsed_s",
+        format!("{:.6}", s.elapsed.as_secs_f64()),
+    );
     field(&mut json, "input_vars", s.input_vars.to_string());
     field(&mut json, "input_clauses", s.input_clauses.to_string());
 
     if let Some(p) = &s.preprocess {
         field(&mut json, "pre_clauses_after", p.clauses_after.to_string());
-        field(&mut json, "pre_vars_eliminated", p.vars_eliminated.to_string());
+        field(
+            &mut json,
+            "pre_vars_eliminated",
+            p.vars_eliminated.to_string(),
+        );
     }
     if let Some(search) = &s.search {
         field(&mut json, "nodes", search.nodes.to_string());
@@ -319,13 +344,29 @@ fn json_stats(result: &SolveResult, cli: &Cli) -> String {
         field(&mut json, "max_depth", search.max_depth.to_string());
         field(&mut json, "cache_lookups", search.cache.lookups.to_string());
         field(&mut json, "cache_hits", search.cache.hits.to_string());
-        field(&mut json, "cache_hit_rate", format!("{:.6}", search.cache.hit_rate()));
+        field(
+            &mut json,
+            "cache_hit_rate",
+            format!("{:.6}", search.cache.hit_rate()),
+        );
         field(&mut json, "cache_entries", search.table.entries.to_string());
         field(&mut json, "cache_evicted", search.cache.evicted.to_string());
         field(&mut json, "table_buckets", search.table.buckets.to_string());
-        field(&mut json, "table_max_bucket", search.table.max_bucket.to_string());
-        field(&mut json, "table_max_depth", search.table.max_depth.to_string());
-        field(&mut json, "table_mean_depth", format!("{:.6}", search.table.mean_depth));
+        field(
+            &mut json,
+            "table_max_bucket",
+            search.table.max_bucket.to_string(),
+        );
+        field(
+            &mut json,
+            "table_max_depth",
+            search.table.max_depth.to_string(),
+        );
+        field(
+            &mut json,
+            "table_mean_depth",
+            format!("{:.6}", search.table.mean_depth),
+        );
         field(&mut json, "cache_bytes", search.cache_bytes.to_string());
     }
     if let Some(dp) = &s.dp {

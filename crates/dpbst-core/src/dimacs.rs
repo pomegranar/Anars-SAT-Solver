@@ -50,7 +50,8 @@ impl ParsedCnf {
     /// reporting under `--stats`.
     #[must_use]
     pub fn header_matches_body(&self) -> bool {
-        self.declared_clauses.is_none_or(|c| c == self.cnf.num_clauses())
+        self.declared_clauses
+            .is_none_or(|c| c == self.cnf.num_clauses())
             && self.declared_vars.is_none_or(|v| v == self.cnf.num_vars())
     }
 }
@@ -75,7 +76,11 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(input: &'a [u8]) -> Self {
-        Self { input, pos: 0, line: 1 }
+        Self {
+            input,
+            pos: 0,
+            line: 1,
+        }
     }
 
     fn run(mut self) -> Result<ParsedCnf, DimacsError> {
@@ -146,7 +151,11 @@ impl<'a> Parser<'a> {
             cnf.reserve_vars(v);
         }
 
-        Ok(ParsedCnf { cnf, declared_vars, declared_clauses })
+        Ok(ParsedCnf {
+            cnf,
+            declared_vars,
+            declared_clauses,
+        })
     }
 
     fn parse_header(&mut self) -> Result<(usize, usize), DimacsError> {
@@ -245,7 +254,10 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
             }
             let token = String::from_utf8_lossy(&self.input[start..self.pos]).into_owned();
-            return Err(DimacsError::BadInteger { line: self.line, token });
+            return Err(DimacsError::BadInteger {
+                line: self.line,
+                token,
+            });
         }
 
         Ok(if negative { -value } else { value })

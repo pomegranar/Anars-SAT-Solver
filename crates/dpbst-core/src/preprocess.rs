@@ -32,7 +32,12 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_resolvent_len: 16, max_occurrences: 64, work_budget: 20_000_000, rounds: 4 }
+        Self {
+            max_resolvent_len: 16,
+            max_occurrences: 64,
+            work_budget: 20_000_000,
+            rounds: 4,
+        }
     }
 }
 
@@ -74,7 +79,10 @@ pub struct Preprocessed {
 /// class of bugs that comes with renumbering does not arise.
 #[must_use]
 pub fn preprocess(cnf: &Cnf, limits: &Limits) -> Preprocessed {
-    let mut stats = PreprocessStats { clauses_before: cnf.num_clauses(), ..Default::default() };
+    let mut stats = PreprocessStats {
+        clauses_before: cnf.num_clauses(),
+        ..Default::default()
+    };
     let (normalised, has_empty) = cnf.normalized();
     let mut trail = Reconstruction::new();
 
@@ -134,7 +142,12 @@ fn finish(
     // `units_fixed` counted every step, not just units; correct it to the fixes attributable to
     // propagation by subtracting the ones attributed elsewhere.
     stats.units_fixed = stats.units_fixed.saturating_sub(stats.pure_fixed);
-    Preprocessed { cnf, verdict, reconstruction, stats }
+    Preprocessed {
+        cnf,
+        verdict,
+        reconstruction,
+        stats,
+    }
 }
 
 /// Removes clauses that are literally identical.
@@ -297,7 +310,10 @@ mod tests {
     fn elimination_respects_the_occurrence_limit() {
         // One variable in many clauses; with max_occurrences 2 it must be left alone.
         let f = cnf(&[&[1, 2], &[1, 3], &[1, 4], &[-1, 5], &[-1, 6], &[-1, 7]]);
-        let limits = Limits { max_occurrences: 2, ..Limits::default() };
+        let limits = Limits {
+            max_occurrences: 2,
+            ..Limits::default()
+        };
         let p = preprocess(&f, &limits);
         // Pure literal elimination may still finish it off; what matters is that BVE did not run
         // away on the high-degree variable.
@@ -339,7 +355,10 @@ mod tests {
                 Some(true) => {
                     let mut m = Model::all_false(f.num_vars());
                     p.reconstruction.extend(&mut m);
-                    assert!(f.is_satisfied_by(&m), "case {case}: claimed SAT with a bad model");
+                    assert!(
+                        f.is_satisfied_by(&m),
+                        "case {case}: claimed SAT with a bad model"
+                    );
                 }
                 None => {
                     // The residual must have exactly the same satisfiability as the input, and a

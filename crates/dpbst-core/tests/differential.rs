@@ -34,7 +34,10 @@ impl Rng {
 /// Ground truth by enumeration.
 fn brute_force(f: &Cnf) -> bool {
     let n = f.num_vars();
-    assert!(n <= 20, "brute force is exponential; {n} variables is too many");
+    assert!(
+        n <= 20,
+        "brute force is exponential; {n} variables is too many"
+    );
     (0..1_u32 << n).any(|mask| {
         let model = Model::from_values((0..n).map(|i| mask >> i & 1 == 1).collect());
         f.is_satisfied_by(&model)
@@ -68,22 +71,49 @@ fn random_cnf(rng: &mut Rng, num_vars: usize, num_clauses: usize, width: usize) 
 fn configurations() -> Vec<(String, Config, bool)> {
     let mut out = Vec::new();
     for bucket in BucketKind::ALL {
-        out.push((format!("bucket={bucket}"), Config { bucket, ..Config::default() }, false));
+        out.push((
+            format!("bucket={bucket}"),
+            Config {
+                bucket,
+                ..Config::default()
+            },
+            false,
+        ));
     }
     for heuristic in Heuristic::ALL {
         out.push((
             format!("heuristic={heuristic}"),
-            Config { heuristic, ..Config::default() },
+            Config {
+                heuristic,
+                ..Config::default()
+            },
             false,
         ));
     }
-    out.push(("no-cache".into(), Config { cache: false, ..Config::default() }, false));
     out.push((
-        "no-pure-literals".into(),
-        Config { pure_literals: false, ..Config::default() },
+        "no-cache".into(),
+        Config {
+            cache: false,
+            ..Config::default()
+        },
         false,
     ));
-    out.push(("no-preprocess".into(), Config { preprocess: false, ..Config::default() }, false));
+    out.push((
+        "no-pure-literals".into(),
+        Config {
+            pure_literals: false,
+            ..Config::default()
+        },
+        false,
+    ));
+    out.push((
+        "no-preprocess".into(),
+        Config {
+            preprocess: false,
+            ..Config::default()
+        },
+        false,
+    ));
     out.push((
         "bare".into(),
         Config {
@@ -109,12 +139,18 @@ fn configurations() -> Vec<(String, Config, bool)> {
         "tiny-cache".into(),
         // A budget this small forces eviction sweeps mid-search, so the sweep path is exercised
         // against ground truth rather than only in isolation.
-        Config { cache_budget_bytes: 32 * 1024, ..Config::default() },
+        Config {
+            cache_budget_bytes: 32 * 1024,
+            ..Config::default()
+        },
         false,
     ));
     out.push((
         "load=64".into(),
-        Config { target_load: 64, ..Config::default() },
+        Config {
+            target_load: 64,
+            ..Config::default()
+        },
         false,
     ));
     out
@@ -127,14 +163,20 @@ fn check(f: &Cnf, label: &str) {
         let result = solve_here(f, &config);
         match &result.outcome {
             Outcome::Sat(model) => {
-                assert!(truth, "{label} [{name}]: said SAT, ground truth is UNSAT\n{f}");
+                assert!(
+                    truth,
+                    "{label} [{name}]: said SAT, ground truth is UNSAT\n{f}"
+                );
                 assert!(
                     f.is_satisfied_by(model),
                     "{label} [{name}]: said SAT with a model that fails the formula\n{f}"
                 );
             }
             Outcome::Unsat => {
-                assert!(!truth, "{label} [{name}]: said UNSAT, ground truth is SAT\n{f}");
+                assert!(
+                    !truth,
+                    "{label} [{name}]: said UNSAT, ground truth is SAT\n{f}"
+                );
             }
             Outcome::Unknown(reason) => {
                 assert!(

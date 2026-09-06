@@ -33,8 +33,13 @@ pub enum Heuristic {
 
 impl Heuristic {
     /// Every heuristic, in a stable order for benchmark tables.
-    pub const ALL: [Self; 5] =
-        [Self::JeroslowWang, Self::Dlis, Self::Dlcs, Self::Mom, Self::Static];
+    pub const ALL: [Self; 5] = [
+        Self::JeroslowWang,
+        Self::Dlis,
+        Self::Dlcs,
+        Self::Mom,
+        Self::Static,
+    ];
 
     /// The heuristic's CLI name.
     #[must_use]
@@ -80,7 +85,9 @@ impl DecisionMaker {
     /// Allocates scratch for a formula with `num_vars` variables.
     #[must_use]
     pub fn new(num_vars: usize) -> Self {
-        Self { scores: vec![0.0; 2 * num_vars] }
+        Self {
+            scores: vec![0.0; 2 * num_vars],
+        }
     }
 
     /// Chooses a literal to branch on within `component`.
@@ -182,7 +189,11 @@ impl DecisionMaker {
     /// Unassigned literals remaining in an active clause.
     #[inline]
     fn active_len(state: &SearchState, clause: usize) -> usize {
-        state.clause(clause).iter().filter(|l| state.value_of_index(l.var().index()).is_none()).count()
+        state
+            .clause(clause)
+            .iter()
+            .filter(|l| state.value_of_index(l.var().index()).is_none())
+            .count()
     }
 }
 
@@ -233,7 +244,9 @@ mod tests {
         let f = cnf(&[&[1, 2], &[4, 5, 6, 7], &[4, 5, 6, 8], &[4, 5, 6, 9]]);
         let (state, store, comp) = only_component(&f);
         let mut d = DecisionMaker::new(f.num_vars());
-        let lit = d.pick(&state, &store, comp, Heuristic::JeroslowWang).unwrap();
+        let lit = d
+            .pick(&state, &store, comp, Heuristic::JeroslowWang)
+            .unwrap();
         assert!(
             matches!(lit.var().to_dimacs(), 1 | 2),
             "expected a variable from the binary clause, got {lit:?}"
@@ -276,7 +289,10 @@ mod tests {
         let mut d = DecisionMaker::new(f.num_vars());
         let first = d.pick(&state, &store, comp, Heuristic::Dlis).unwrap();
         let second = d.pick(&state, &store, comp, Heuristic::Dlis).unwrap();
-        assert_eq!(first, second, "a repeated call on the same state must be stable");
+        assert_eq!(
+            first, second,
+            "a repeated call on the same state must be stable"
+        );
     }
 
     #[test]
@@ -285,7 +301,9 @@ mod tests {
         let (state, store, comp) = only_component(&f);
         let mut d = DecisionMaker::new(f.num_vars());
         for h in Heuristic::ALL {
-            let lit = d.pick(&state, &store, comp, h).expect("component is non-empty");
+            let lit = d
+                .pick(&state, &store, comp, h)
+                .expect("component is non-empty");
             assert!(
                 store.vars(comp).contains(&(lit.var().index() as u32)),
                 "{h} picked {lit:?}, which is outside the component"

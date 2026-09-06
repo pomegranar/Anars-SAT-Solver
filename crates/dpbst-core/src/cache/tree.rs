@@ -114,7 +114,11 @@ impl BucketPolicy for Unbalanced {
         let mut cur = *root;
         loop {
             let go_left = cmp_probe(arena, cur, hash, key) == Ordering::Less;
-            let child = if go_left { arena.get(cur).left } else { arena.get(cur).right };
+            let child = if go_left {
+                arena.get(cur).left
+            } else {
+                arena.get(cur).right
+            };
             if child.is_none() {
                 if go_left {
                     arena.get_mut(cur).left = node;
@@ -138,7 +142,11 @@ pub struct Avl;
 
 #[inline]
 fn height(arena: &NodeArena, id: NodeId) -> i32 {
-    if id.is_none() { 0 } else { i32::from(arena.get(id).height) }
+    if id.is_none() {
+        0
+    } else {
+        i32::from(arena.get(id).height)
+    }
 }
 
 fn refresh_height(arena: &mut NodeArena, id: NodeId) {
@@ -195,13 +203,7 @@ fn avl_rebalance(arena: &mut NodeArena, id: NodeId) -> NodeId {
     }
 }
 
-fn avl_insert(
-    arena: &mut NodeArena,
-    root: NodeId,
-    node: NodeId,
-    hash: u64,
-    key: &[u8],
-) -> NodeId {
+fn avl_insert(arena: &mut NodeArena, root: NodeId, node: NodeId, hash: u64, key: &[u8]) -> NodeId {
     if root.is_none() {
         return node;
     }
@@ -276,7 +278,11 @@ fn splay(arena: &mut NodeArena, root: NodeId, hash: u64, key: &[u8]) -> NodeId {
                 }
                 Ordering::Equal => {}
             }
-            if arena.get(root).left.is_none() { root } else { rotate_right(arena, root) }
+            if arena.get(root).left.is_none() {
+                root
+            } else {
+                rotate_right(arena, root)
+            }
         }
         Ordering::Greater => {
             let right = arena.get(root).right;
@@ -304,7 +310,11 @@ fn splay(arena: &mut NodeArena, root: NodeId, hash: u64, key: &[u8]) -> NodeId {
                 }
                 Ordering::Equal => {}
             }
-            if arena.get(root).right.is_none() { root } else { rotate_left(arena, root) }
+            if arena.get(root).right.is_none() {
+                root
+            } else {
+                rotate_left(arena, root)
+            }
         }
     }
 }
@@ -317,7 +327,11 @@ impl BucketPolicy for Splay {
             return NodeId::NONE;
         }
         *root = splay(arena, *root, hash, key);
-        if cmp_probe(arena, *root, hash, key) == Ordering::Equal { *root } else { NodeId::NONE }
+        if cmp_probe(arena, *root, hash, key) == Ordering::Equal {
+            *root
+        } else {
+            NodeId::NONE
+        }
     }
 
     fn insert(arena: &mut NodeArena, root: &mut NodeId, node: NodeId, hash: u64, key: &[u8]) {
