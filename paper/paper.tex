@@ -1,0 +1,538 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage[T1]{fontenc}
+\usepackage{url}
+
+\graphicspath{{figures/}}
+
+\begin{document}
+
+\title{DP-BST: Dynamic-Programming Component Caching in a\\
+Hash Table of Binary Search Trees for Boolean Satisfiability}
+
+\author{
+\IEEEauthorblockN{Anar N.}
+\IEEEauthorblockA{Independent}
+}
+
+\maketitle
+
+\begin{abstract}
+This paper describes and evaluates DP-BST, a satisfiability (SAT) solver that combines the
+Davis--Putnam--Logemann--Loveland (DPLL) search procedure with a dynamic-programming cache of
+previously solved formula components. The cache is keyed on the connected components that the
+residual formula decomposes into once a subset of variables has been assigned, and is stored in a
+hash table whose collision buckets are binary search trees rather than the linked lists used by
+textbook separate chaining. Four bucket implementations, an AVL tree, an unbalanced binary search
+tree, a splay tree, and a linked list retained as the experimental control, are compared under
+identical search traffic. The solver is evaluated on 136 instances drawn from fourteen benchmark
+families, spanning uniform random 3-SAT, structured combinatorial encodings, and circuit fault
+detection instances, against five reference solvers occupying three distinct points on the
+performance spectrum: Kissat, representing the current state of the art; CaDiCaL, a widely used
+modern standard; and MiniSat, the established baseline against which most subsequent solvers have
+been measured, together with two contemporary solvers written in the same implementation
+language, varisat and splr. The results show that component caching yields a memoisation hit rate
+exceeding thirty percent on several structured families and a corresponding reduction in search
+nodes, while providing no benefit on uniform random instances whose constraint graphs do not
+decompose. The absence of conflict-driven clause learning leaves a penalised average runtime
+roughly five times that of Kissat over the full benchmark set. Within the cache itself, ordering
+each bucket as a balanced binary search tree reduces the mean number of comparisons per lookup by
+thirteen percent relative to a linked list at the load factors exercised, with the difference
+widening as bucket occupancy grows.
+\end{abstract}
+
+\section{Introduction}
+
+Boolean satisfiability is the problem of deciding whether a Boolean formula in conjunctive normal
+form (CNF) admits an assignment of its variables that makes every clause true. It was the first
+problem shown to be NP-complete \cite{cook1971}, and despite this worst-case intractability,
+modern solvers routinely decide industrial instances with millions of variables. The dominant
+architecture since the mid-1990s has been conflict-driven clause learning (CDCL)
+\cite{marques-silva1999}, which augments the earlier DPLL backtracking procedure
+\cite{davis1962} with the derivation and retention of clauses that explain each search failure,
+together with a decision heuristic, VSIDS, that is driven by the variables appearing in those
+learned clauses.
+
+This paper takes a different, and considerably less common, route to reducing search: rather than
+learning from conflicts, the solver described here recognises when the residual formula at a
+search node factors into independent subproblems and remembers the outcome of each subproblem so
+that it need not be resolved when the same subproblem is reached again by a different sequence of
+decisions. This technique, component caching, is a direct application of dynamic programming to
+the search tree and has an established history in exact model counting
+\cite{bayardo2000,sang2004,thurley2006}, but is comparatively rarely used as the primary
+acceleration mechanism in a decision-only SAT solver, where clause learning has instead become the
+default.
+
+The specific question this paper investigates is architectural rather than algorithmic: given
+that the cache must be implemented as a hash table, does the internal structure of each collision
+bucket matter, and if so, by how much. Separate chaining, in which each bucket is a linked list
+searched linearly, is the structure presented in most textbooks and is what the reference
+implementations consulted during this work use for their own internal data structures. This paper
+replaces the linked list with a binary search tree ordered by the full sixty-four bit hash of the
+cache key, and compares four bucket policies, an AVL tree, an unbalanced binary search tree, a
+splay tree, and the linked list retained as a control, under otherwise identical search traffic.
+
+The contributions of this paper are threefold. First, a working DPLL solver, DP-BST, is described
+that performs connected-component decomposition and memoisation without clause learning, together
+with the classical Davis--Putnam resolution procedure \cite{davis1960} and a bounded form of it
+used as a preprocessor \cite{een2005}. Second, the solver is evaluated against five established
+and current reference solvers on 136 instances from fourteen benchmark families, using the
+penalised average runtime (PAR-2) scoring rule standard to the SAT Competition. Third, the four
+bucket policies are compared directly on the deterministic counters the cache itself reports,
+isolating the data structure question from the considerable noise introduced by process
+scheduling and memory bandwidth contention on the shared evaluation hardware.
+
+The principal negative result is stated here rather than deferred: a solver without clause
+learning does not compete with one that has it, and this paper does not claim otherwise. The
+purpose of the comparison is to characterise, honestly and with error handling made explicit,
+exactly where component caching helps, where it does not, and what a tree-structured hash bucket
+buys over the conventional linked list once that characterisation is in hand.
+
+\section{Background and Related Work}
+
+\subsection{Search procedures}
+
+The Davis--Putnam procedure \cite{davis1960} decides satisfiability by eliminating variables
+through resolution: a variable $x$ is removed by replacing every clause containing $x$ or
+$\lnot x$ with the resolvents of its positive and negative occurrences. The procedure requires no
+backtracking, but the number of resolvents produced by eliminating a variable of positive and
+negative degree $p$ and $n$ is bounded above by $p \cdot n$, and this product can compound across
+successive eliminations until the formula exhausts available memory. The Davis--Putnam--Logemann--
+Loveland procedure \cite{davis1962} replaced unconditional elimination with a backtracking search:
+a variable is assigned a trial value, the consequences are propagated, and the assignment is
+reversed on failure. This is the architecture underlying every solver evaluated in this paper.
+
+Modern solvers extend DPLL with conflict-driven clause learning \cite{marques-silva1999}: on
+reaching a contradiction, the search analyses the implication graph to derive a new clause that
+would have prevented the conflict, adds it to the formula, and backtracks non-chronologically to
+the point where that clause becomes unit. The variable activity heuristic VSIDS, which favours
+variables occurring frequently in recently learned clauses, is what makes the resulting search
+effective in practice. DP-BST implements neither mechanism; its branching heuristics operate
+instead on the literal statistics of the residual formula, as described in Section~III.
+
+\subsection{Component caching}
+
+Once some variables have been assigned, the clauses that remain unsatisfied by that partial
+assignment frequently partition into groups sharing no variable in common. Each such group,
+termed a component, can be solved independently, and the same component is often reached again
+later in the search by a different order of decisions. Bayardo and Pehoushek
+\cite{bayardo2000} first exploited this observation to accelerate model counting; Sang et
+al.\ combined it with clause learning in Cachet \cite{sang2004}; and Thurley's sharpSAT
+\cite{thurley2006} refined the cache-key representation and introduced the activity-based
+eviction policy this paper's cache adopts. A component is named by the pair of its unassigned
+variables and its currently active clauses, both as sorted index sets; this pair determines the
+residual formula exactly, because a clause is active only when none of its literals is satisfied,
+so every assigned variable occurring in an active clause is known to be assigned falsely, and the
+residual of that clause is recoverable from the key alone. Pure literal elimination, which is
+sound for deciding satisfiability but not for counting models, is applied within each component
+before it is cached.
+
+\subsection{Preprocessing}
+
+E{\'e}n and Biere's bounded variable elimination \cite{een2005} applies the Davis--Putnam
+resolution rule selectively, eliminating a variable only when doing so does not increase the
+number of clauses, together with subsumption and self-subsuming resolution. This bounded form is
+what survived from the original 1960 procedure into every solver evaluated here; DP-BST implements
+the same resolution and model-reconstruction machinery in both its unconditional Davis--Putnam
+mode and its bounded preprocessor.
+
+\subsection{Reference solvers}
+
+Three reference points anchor the comparison at different stages of the field's development.
+MiniSat \cite{een2003} is the established baseline: a compact CDCL implementation whose source
+has served as the starting point for a large fraction of subsequent solvers. CaDiCaL
+\cite{biere2019} is treated here as the current standard: a actively maintained, simplification-
+heavy CDCL solver in wide use as a component within larger verification and synthesis toolchains.
+Kissat \cite{biere2021} represents the state of the art by the operational definition used in
+this paper, namely strong and consistent placement in recent SAT Competition main tracks. Two
+further solvers, varisat \cite{varisat} and splr \cite{splr}, are included because, like DP-BST,
+they are implemented in Rust, and their inclusion controls for implementation language and
+toolchain when interpreting the comparison against the three solvers above, which are written in
+C or C++.
+
+\section{Design}
+
+DP-BST follows the pipeline common to preprocessing SAT solvers: the input is parsed, normalised,
+simplified by bounded variable elimination and unit propagation, and handed to a DPLL search that
+performs connected-component decomposition and consults the cache at every search node before
+branching. Two implementation decisions are specific to this work and are summarised here; a
+complete description is maintained in the project repository.
+
+\subsection{Propagation by counters rather than watched literals}
+
+Competitive CDCL solvers propagate using two watched literals per clause, so that a clause is
+inspected only when one of two designated literals is falsified. This scheme does not expose
+whether a clause is currently satisfied, which is precisely the information component
+decomposition requires at every search node. DP-BST instead maintains, for every clause, a count
+of satisfied literals and a count of unassigned literals, from which the clause's status
+(satisfied, active, unit, or conflicting) follows in constant time and undoes exactly on
+backtracking. The cost is that assigning a variable touches every clause containing it, rather
+than the smaller fraction touched under watched literals; this is a deliberate trade against raw
+propagation throughput in exchange for making decomposition tractable, and is a direct contributor
+to the performance gap reported in Section~V.
+
+\subsection{The bucket policies}
+
+The cache is a hash table whose bucket index is the low-order bits of a sixty-four bit key hash.
+Within a bucket, entries are additionally ordered by the full sixty-four bit hash rather than
+solely by the raw key bytes, so that a comparison during search is a single machine-word
+comparison in the overwhelmingly common case, and falls back to a byte-wise comparison of the key
+only on an exact hash collision. Because the low bits determining the bucket are fixed within
+that bucket, the remaining high bits are effectively uniform at random, which gives even the
+unbalanced binary search tree an expected logarithmic depth; the AVL tree additionally guarantees
+this bound in the worst case, and the splay tree instead adapts its shape to the skew actually
+observed in cache traffic. All four policies, together with the linked list retained as a control,
+share one underlying node arena, addressed by index rather than pointer, so that the comparison
+isolates the ordering discipline of the bucket from unrelated allocator effects.
+
+\section{Experimental Setup}
+
+\begin{table}[t]
+\caption{Evaluation hardware and software configuration}
+\label{tab:setup}
+\centering
+\input{tables/tab_setup}
+\end{table}
+
+Table~\ref{tab:setup} lists the hardware and software configuration used throughout. All
+reference solvers were built from their own source at the pinned versions given, rather than
+installed from a package manager, so that the exact revision under test is known. Every solver
+was run with a ten second wall-clock limit per instance; no per-instance limit on memory was
+imposed beyond what the operating system enforces.
+
+\begin{table}[t]
+\caption{Benchmark families}
+\label{tab:families}
+\centering
+\input{tables/tab_families}
+\end{table}
+
+Table~\ref{tab:families} lists the fourteen benchmark families and the number of instances drawn
+from each, totalling 136 instances. Families were selected to span three regimes: uniform random
+3-SAT at and near the satisfiability threshold, where the constraint graph is an expander and
+component decomposition is not expected to help; structured combinatorial encodings, including
+pigeonhole and parity formulas, where the constraint graph is expected to be sparser; and circuit
+fault detection instances (bf, ssa) drawn from the DIMACS benchmark archive. Instances were
+sourced from SATLIB and from the original DIMACS collection.
+
+\subsection{Timing methodology}
+
+All six solvers under wall-clock comparison were run sequentially, one solver and one instance at
+a time, on an otherwise idle machine. This is a deliberate methodological constraint: the
+evaluation hardware is a heterogeneous eight-core processor with four performance cores and four
+efficiency cores and no user-space affinity control, so that running solvers concurrently would
+place an arbitrary subset of them on the slower efficiency cores, biasing whichever solver the
+scheduler happened to assign there. All timing figures and the PAR-2 scores in Section~V are
+computed exclusively from this sequential run.
+
+A second class of measurement, the search node count, the memoisation hit rate, and the mean and
+maximum bucket depth, was collected separately under four-way parallel execution restricted to the
+four performance cores. These quantities are deterministic properties of the solver's execution on
+a given instance and configuration and do not depend on wall-clock contention; this was verified
+directly by comparing the reported counters for an identical benchmark set run first at
+concurrency one and then at concurrency four, which produced byte-identical output. No wall-clock
+time from this parallel run is reported anywhere in this paper.
+
+\subsection{Scoring}
+
+Solver performance is summarised using the penalised average runtime with a penalty factor of two
+(PAR-2), the scoring rule of the SAT Competition: an instance solved within the time limit
+contributes its actual runtime, and an instance not solved within the limit contributes twice the
+limit. This rule was chosen over a plain mean restricted to solved instances because the latter
+allows a solver to improve its reported average by failing outright on the instances it would
+otherwise have been slowest to solve.
+
+\subsection{Data quality and exclusions}
+
+Two malformed instances in the dubois and pret families (dubois100, and the four instances of
+pret150) were excluded from every comparison after inspection showed that a strict DIMACS parse
+of each file yields a different formula than the one its authors intended: dubois100 is missing
+two clause terminators, causing four clauses to merge into two tautologies under strict parsing
+and the intended unsatisfiable instance to become trivially satisfiable, while each pret150
+instance ends with a stray zero that strict parsing reads as a well-formed but unintended empty
+clause, forcing an unsatisfiable verdict by inspection rather than by search. Both are read
+successfully by DP-BST and by MiniSat, which are more permissive of a header and body clause count
+mismatch, and rejected outright by CaDiCaL and Kissat.
+
+Separately, varisat 0.2.1 rejects twelve of the sixteen ssa family instances outright with a
+parse error, because its DIMACS reader does not accept the literal tab character used as
+inter-token whitespace in those files, a byte accepted by every other solver under test. These
+twelve instances are recorded as unsolved for varisat in the PAR-2 score reported in
+Table~\ref{tab:par2}; this is a limitation of that solver's input handling rather than of its
+search, and is reported here rather than concealed by silently repairing the affected files for
+varisat alone.
+
+\section{Results}
+
+\subsection{Aggregate performance}
+
+\begin{table}[t]
+\caption{Solve count and PAR-2 score, all 136 instances, ranked best to worst}
+\label{tab:par2}
+\centering
+\input{tables/tab_par2}
+\end{table}
+
+Table~\ref{tab:par2} summarises PAR-2 score and solve count across all 136 instances. Kissat
+attains the lowest, and therefore best, PAR-2 score, consistent with its position as the current
+state of the art. DP-BST attains the highest PAR-2 score of the six solvers compared, driven
+principally by fourteen instances, concentrated in the uuf250-1065 and QG families, on which it
+does not terminate within the time limit while every reference solver does. varisat's score is
+inflated by the twelve ssa parse failures discussed above rather than by search performance; with
+those instances excluded, its PAR-2 score is comparable to CaDiCaL and splr.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.92\textwidth]{fig_cactus}
+\caption{Instances solved as a function of cumulative wall-clock time, ranked independently for
+each solver (a cactus plot). A curve further to the right solves more instances within a given
+time budget; a curve lower on the page solves the same rank of instance faster. DP-BST tracks the
+reference solvers closely over the easiest half of the benchmark set and separates from them on
+the harder instances where the absence of clause learning is most exposed.}
+\label{fig:cactus}
+\end{figure*}
+
+Figure~\ref{fig:cactus} shows the corresponding cactus plot. The five reference solvers are
+difficult to distinguish over the first eighty instances solved, all completing in under one
+hundred milliseconds; DP-BST tracks this group closely but with a consistently higher per-instance
+cost, visible as a near-constant vertical offset over this range that reflects the fixed overhead
+of counter-based propagation and component analysis rather than a difference in the number of
+instances solved. The curves separate substantially over the final quarter of the plot, where
+DP-BST's curve rises an order of magnitude above the reference solvers before terminating short of
+the full instance count.
+
+\subsection{Head-to-head comparison with the state of the art}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\linewidth]{fig_scatter}
+\caption{Per-instance solve time, DP-BST against Kissat, on the 132 instances both solvers
+attempted. Points above the diagonal are instances Kissat solved faster; the dotted guides mark a
+tenfold and a hundredfold difference. Cross markers denote an instance on which one solver reached
+the time limit.}
+\label{fig:scatter}
+\end{figure}
+
+Figure~\ref{fig:scatter} plots solve time per instance directly against Kissat. The great majority
+of points lie above the equality line and within the tenfold guide, indicating a consistent but
+bounded per-instance overhead on the easier instances rather than an occasional catastrophic
+failure. The cluster of cross markers at the top of the plot corresponds to the fourteen DP-BST
+timeouts identified in Section~V-A; several of these are instances Kissat solves in under one
+second, showing that the failure is specific to DP-BST's search rather than a property of
+instance difficulty common to both solvers.
+
+\subsection{Per-family breakdown}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.92\textwidth]{fig_family_bars}
+\caption{Median solve time by benchmark family, all six solvers. The families are ordered
+alphabetically; uf250-1065 and uuf250-1065 (rightmost) are the two families containing 250
+variable uniform random instances and account for the largest absolute gap between DP-BST and the
+reference solvers.}
+\label{fig:family}
+\end{figure*}
+
+Figure~\ref{fig:family} disaggregates the comparison by family. DP-BST's overhead relative to the
+reference solvers is smallest, often under a factor of three, on the structured families where the
+memoisation hit rate reported in Section~V-D is highest (bf, dubois, grid, ssa), and largest on the
+two uniform random 3-SAT families at 250 variables, where the constraint graph does not decompose
+and the cache cannot contribute.
+
+\subsection{Memory}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\linewidth]{fig_memory}
+\caption{Peak resident memory across all 136 instances, one box per solver. Boxes span the
+interquartile range; whiskers extend to the most extreme value within 1.5 times that range.}
+\label{fig:memory}
+\end{figure}
+
+Figure~\ref{fig:memory} shows peak resident memory. DP-BST's median footprint is higher than every
+reference solver's, and its upper quartile is markedly higher still, consistent with the memory
+cost of retaining solved components in the cache in addition to the formula itself; the cache's
+own byte budget, described in Section~III, bounds this growth but does not eliminate the gap.
+
+\subsection{Where the cache helps}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\linewidth]{fig_hitrate}
+\caption{Memoisation hit rate by benchmark family, restricted to families in which the cache
+recorded at least one lookup. Families not shown recorded no active component splits under the
+AVL bucket policy.}
+\label{fig:hitrate}
+\end{figure}
+
+Figure~\ref{fig:hitrate} reports the fraction of component lookups answered directly from the
+cache, for the families in which the cache was consulted at all. The php family, pigeonhole
+instances that are unsatisfiable by construction, shows the highest hit rate at 48.5\%, consistent
+with the high degree of structural symmetry between pigeons that pigeonhole encodings are known
+for. The bf and ssa circuit fault families follow at 37.3\% and 36.9\% respectively. The dubois
+family records a hit rate of exactly zero: inspection of the corresponding ablation data
+(Section~V-F) shows that these instances are in fact solved almost entirely by bounded variable
+elimination during preprocessing, with the search proper, and therefore the cache, contributing
+negligibly. This is reported as a genuine finding rather than smoothed over: the two forms of
+dynamic programming this solver implements, resolution-based elimination and component caching,
+are not uniformly useful on the same instances, and attributing dubois's tractability to the cache
+would have been incorrect.
+
+\subsection{Bucket policy}
+
+\begin{table}[t]
+\caption{Bucket comparisons per lookup, by policy}
+\label{tab:buckets}
+\centering
+\input{tables/tab_buckets}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\linewidth]{fig_bucket_depth}
+\caption{Mean and maximum number of key comparisons performed by a successful bucket lookup, by
+bucket policy, averaged over all instances in the families listed in Table~\ref{tab:families} for
+which the cache was consulted.}
+\label{fig:bucket}
+\end{figure}
+
+Table~\ref{tab:buckets} and Figure~\ref{fig:bucket} isolate the question this paper set out to
+answer. At the load factor exercised in these experiments, the AVL tree reduces mean comparisons
+per lookup by 13\% relative to the linked list (1.39 against 1.60) and reduces the maximum
+observed depth by exactly half (2.8 against 5.6). The unbalanced tree and the splay tree fall
+between these two extremes, both benefiting from the randomisation of insertion order that
+storing entries by hash value rather than by raw key induces, as argued in Section~III, without
+either matching the worst-case guarantee the AVL tree provides. The absolute magnitude of the mean
+depth improvement is modest at the load factor of four entries per bucket used by default; the
+maximum depth column indicates that the advantage would be expected to widen at higher load
+factors, where an unbalanced structure is more exposed to the tail of its depth distribution, a
+regime not exercised at length in the present experiments and left to future work.
+
+\subsection{Ablation}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.92\textwidth]{fig_ablation}
+\caption{Search nodes summed over all instances in each family, under five configurations: the
+full solver; the memo disabled; pure literal elimination disabled; preprocessing disabled; and
+plain DPLL, which disables component decomposition, the memo, and preprocessing simultaneously.
+Note the logarithmic scale.}
+\label{fig:ablation}
+\end{figure*}
+
+Figure~\ref{fig:ablation} shows search node counts under five configurations. Disabling
+preprocessing alone produces the largest increase in search nodes on the dubois family, by more
+than three orders of magnitude, corroborating the zero cache hit rate reported above and confirming
+that bounded variable elimination, not component caching, is responsible for that family's
+tractability. On the chain family, by contrast, disabling the memo alone increases search nodes by
+more than an order of magnitude while disabling preprocessing has comparatively little effect,
+indicating that component reuse is doing the substantive work on that family. Plain DPLL, which
+removes decomposition, the memo, and preprocessing together, is uniformly the worst or tied-worst
+configuration across every family shown.
+
+\section{Discussion and Threats to Validity}
+
+The central limitation of this work is the absence of conflict-driven clause learning. Component
+caching and clause learning are not straightforwardly compatible: a learned clause that spans two
+otherwise independent components merges them, destroying the decomposition the cache depends on.
+Solvers that combine both mechanisms exist \cite{sang2004} but require careful bookkeeping to
+reconcile the two; DP-BST does not attempt this, and the fourteen timeouts recorded in
+Section~V-A are the direct, and expected, consequence of that omission on instances whose
+structure does not otherwise decompose.
+
+A second limitation is the counter-based propagation scheme described in Section~III, adopted
+specifically to expose clause satisfaction status to the component analyser at the cost of
+touching more clauses per assignment than a watched-literal scheme would. This cost is present on
+every instance, including those the cache does not help, and is visible as the near-uniform
+vertical offset in Figure~\ref{fig:cactus} over the range where all solvers otherwise perform
+comparably.
+
+Regarding external validity, the benchmark set, while spanning fourteen families and three
+qualitatively distinct instance regimes, remains modest in scale relative to the SAT Competition's
+own benchmark corpus, and the structured families in particular contain few independent instances
+each. The bucket-policy comparison in Section~V-F was conducted at a single default load factor;
+the direction of the effect is consistent with the argument in Section~III, but its magnitude at
+higher load factors, where the difference between a balanced and an unbalanced structure would be
+expected to be most pronounced, was not measured here. Each instance was run once per solver per
+configuration rather than averaged over repeated trials; this matches the single-run methodology
+of the SAT Competition itself, but does not quantify run-to-run timing variance on the evaluation
+hardware.
+
+\section{Conclusion}
+
+This paper presented DP-BST, a DPLL-based SAT solver whose principal acceleration mechanism is
+dynamic-programming component caching rather than conflict-driven clause learning, and evaluated
+both the solver as a whole and the internal structure of its cache. Against five reference
+solvers spanning the established, standard, and current state of the art, DP-BST does not compete
+on aggregate runtime, a consequence of the clause-learning it forgoes and of the counter-based
+propagation its decomposition analysis requires. It nonetheless demonstrates a clear and
+measurable benefit from component reuse on instance families whose constraint structure permits
+decomposition, with memoisation hit rates exceeding thirty percent and corresponding reductions in
+search nodes on several such families, and a null result, honestly reported rather than obscured,
+on families where decomposition does not occur. Within the cache, ordering collision buckets as
+balanced binary search trees measurably reduces the comparisons required per lookup relative to
+the conventional linked list, confirming the paper's starting hypothesis at the load factor tested
+and motivating further measurement at higher load, where the effect is expected to be larger.
+
+\begin{thebibliography}{99}
+
+\bibitem{cook1971}
+S.~A. Cook, ``The complexity of theorem-proving procedures,'' in \emph{Proceedings of the Third
+Annual ACM Symposium on Theory of Computing (STOC)}, 1971.
+
+\bibitem{davis1960}
+M.~Davis and H.~Putnam, ``A computing procedure for quantification theory,'' \emph{Journal of the
+ACM}, vol.~7, no.~3, 1960.
+
+\bibitem{davis1962}
+M.~Davis, G.~Logemann, and D.~Loveland, ``A machine program for theorem-proving,''
+\emph{Communications of the ACM}, vol.~5, no.~7, 1962.
+
+\bibitem{marques-silva1999}
+J.~P. Marques-Silva and K.~A. Sakallah, ``GRASP: A search algorithm for propositional
+satisfiability,'' \emph{IEEE Transactions on Computers}, vol.~48, no.~5, 1999.
+
+\bibitem{een2003}
+N.~E{\'e}n and N.~S{\"o}rensson, ``An extensible SAT-solver,'' in \emph{Theory and Applications
+of Satisfiability Testing (SAT)}, Lecture Notes in Computer Science, vol.~2919, Springer, 2003.
+
+\bibitem{een2005}
+N.~E{\'e}n and A.~Biere, ``Effective preprocessing in SAT through variable and clause
+elimination,'' in \emph{Theory and Applications of Satisfiability Testing (SAT)}, Lecture Notes in
+Computer Science, vol.~3569, Springer, 2005.
+
+\bibitem{bayardo2000}
+R.~J. Bayardo Jr.\ and J.~D. Pehoushek, ``Counting models using connected components,'' in
+\emph{Proceedings of the Seventeenth National Conference on Artificial Intelligence (AAAI)}, 2000.
+
+\bibitem{sang2004}
+T.~Sang, F.~Bacchus, P.~Beame, H.~A. Kautz, and T.~Pipatsrisawat, ``Combining component caching
+and clause learning for effective model counting,'' in \emph{Theory and Applications of
+Satisfiability Testing (SAT)}, 2004.
+
+\bibitem{thurley2006}
+M.~Thurley, ``sharpSAT: Counting models with advanced component caching and implicit BCP,'' in
+\emph{Theory and Applications of Satisfiability Testing (SAT)}, Lecture Notes in Computer Science,
+vol.~4121, Springer, 2006.
+
+\bibitem{biere2019}
+A.~Biere, ``CaDiCaL at the SAT Race 2019,'' in \emph{Proceedings of SAT Race 2019: Solver and
+Benchmark Descriptions}, 2019.
+
+\bibitem{biere2021}
+A.~Biere and M.~Fleury, ``Gimsatul, IsaSAT, and Kissat entering the SAT Competition 2022,'' in
+\emph{Proceedings of SAT Competition 2022: Solver and Benchmark Descriptions}, 2022.
+
+\bibitem{varisat}
+J.~Harder, \emph{varisat}, software repository, \url{https://github.com/jix/varisat}.
+
+\bibitem{splr}
+S.~Narazaki, \emph{splr: a modern CDCL SAT solver in Rust}, software repository,
+\url{https://github.com/shnarazk/splr}.
+
+\end{thebibliography}
+
+\end{document}

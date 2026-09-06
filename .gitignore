@@ -21,3 +21,16 @@ ans_*.cnf
 /results/report.pdf
 /results/_report/
 /results/*.log
+
+# Paper: figures/tables are regenerated from results/*.csv by scripts/academic_plots.py;
+# the PDF and latexmk's auxiliary files are build output, not source.
+/paper/figures/
+/paper/tables/
+/paper/paper.pdf
+/paper/*.aux
+/paper/*.log
+/paper/*.out
+/paper/*.fls
+/paper/*.fdb_latexmk
+/paper/*.bbl
+/paper/*.blg
