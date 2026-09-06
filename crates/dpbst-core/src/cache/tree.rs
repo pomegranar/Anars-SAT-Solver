@@ -327,17 +327,14 @@ impl BucketPolicy for Splay {
         }
         let top = splay(arena, *root, hash, key);
         // Split the splayed tree at the new node and hang both halves off it.
-        match cmp_probe(arena, top, hash, key) {
-            Ordering::Greater => {
-                arena.get_mut(node).left = top;
-                arena.get_mut(node).right = arena.get(top).right;
-                arena.get_mut(top).right = NodeId::NONE;
-            }
-            _ => {
-                arena.get_mut(node).right = top;
-                arena.get_mut(node).left = arena.get(top).left;
-                arena.get_mut(top).left = NodeId::NONE;
-            }
+        if cmp_probe(arena, top, hash, key) == Ordering::Greater {
+            arena.get_mut(node).left = top;
+            arena.get_mut(node).right = arena.get(top).right;
+            arena.get_mut(top).right = NodeId::NONE;
+        } else {
+            arena.get_mut(node).right = top;
+            arena.get_mut(node).left = arena.get(top).left;
+            arena.get_mut(top).left = NodeId::NONE;
         }
         *root = node;
     }

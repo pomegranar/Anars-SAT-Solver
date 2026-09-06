@@ -75,7 +75,7 @@ impl fmt::Debug for Var {
 
 /// A literal: a variable together with a polarity.
 ///
-/// Encoded as `2 * var + negated`, the MiniSat convention. Two useful properties follow:
+/// Encoded as `2 * var + negated`, the `MiniSat` convention. Two useful properties follow:
 /// negation is `^ 1`, and a literal doubles as an index into a `2 * num_vars` array, which is
 /// how occurrence lists are laid out.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

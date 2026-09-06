@@ -95,6 +95,7 @@ impl Cnf {
     }
 
     /// Iterates over the clauses in order.
+    #[must_use]
     pub fn clauses(&self) -> impl ExactSizeIterator<Item = &[Lit]> {
         (0..self.num_clauses()).map(move |i| self.clause(i))
     }
@@ -238,6 +239,7 @@ impl Model {
     }
 
     /// The literals of the model, in variable order.
+    #[must_use]
     pub fn literals(&self) -> impl ExactSizeIterator<Item = Lit> + '_ {
         self.values.iter().enumerate().map(|(i, &v)| Var::from_index(i).lit(v))
     }

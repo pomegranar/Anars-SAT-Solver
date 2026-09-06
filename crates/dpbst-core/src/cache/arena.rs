@@ -7,7 +7,7 @@
 //! address at every level of every tree, eight-byte child pointers, and a `free` per node on
 //! eviction. The arena gives locality, halves the pointer width, turns deletion into a free-list
 //! push, and keeps the module inside `#![forbid(unsafe_code)]`. The pattern is lifted from how
-//! MiniSat and its Rust port `batsat` allocate clauses behind `u32` references.
+//! `MiniSat` and its Rust port `batsat` allocate clauses behind `u32` references.
 
 /// A handle into [`NodeArena`].
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(a.get(id).verdict(), Verdict::Unsat);
         // Only the key was written to the blob.
         assert_eq!(a.key(id), b"k");
-        assert_eq!(a.memory_bytes() > 0, true);
+        assert!(a.memory_bytes() > 0);
     }
 
     #[test]

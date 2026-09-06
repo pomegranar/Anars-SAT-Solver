@@ -87,9 +87,7 @@ impl<'a> Parser<'a> {
         loop {
             self.skip_whitespace();
             match self.peek() {
-                None => break,
                 Some(b'c') => self.skip_line(),
-                Some(b'%') => break,
                 Some(b'p') => {
                     let (vars, clauses) = self.parse_header()?;
                     declared_vars = Some(vars);
@@ -99,7 +97,8 @@ impl<'a> Parser<'a> {
                     cnf = Some(Cnf::with_capacity(vars, clauses, clauses.saturating_mul(3)));
                     break;
                 }
-                Some(_) => break,
+                // End of input, SATLIB's `%` marker, or the first clause: header phase over.
+                _ => break,
             }
         }
 
@@ -113,13 +112,12 @@ impl<'a> Parser<'a> {
         loop {
             self.skip_whitespace();
             match self.peek() {
-                None => break,
+                // End of input, or SATLIB's `%` marker: everything after it is not clause data.
+                None | Some(b'%') => break,
                 Some(b'c') => {
                     self.skip_line();
                     continue;
                 }
-                // SATLIB's end-of-instance marker. Everything after it is not clause data.
-                Some(b'%') => break,
                 _ => {}
             }
 

@@ -44,7 +44,7 @@ pub use tree::{Avl, BucketKind, BucketPolicy, Chain, Splay, Unbalanced};
 
 /// Hashes a component key to 64 bits.
 ///
-/// A multiply-xor-rotate absorb over eight-byte chunks, finished with the SplitMix64 avalanche.
+/// A multiply-xor-rotate absorb over eight-byte chunks, finished with the `SplitMix64` avalanche.
 /// The finaliser is what matters here: the low bits pick the bucket and the high bits order the
 /// tree, so every bit of the output has to be well mixed.
 #[must_use]
@@ -292,9 +292,7 @@ impl<P: BucketPolicy> ComponentCache<P> {
             self.budget_bytes = self.budget_bytes.saturating_mul(2);
         }
 
-        for slot in &mut self.buckets {
-            *slot = NodeId::NONE;
-        }
+        self.buckets.fill(NodeId::NONE);
         self.rebuild_from(&survivors);
         self.stats.sweeps += 1;
     }
@@ -327,9 +325,7 @@ impl<P: BucketPolicy> ComponentCache<P> {
     /// Drops every entry.
     pub fn clear(&mut self) {
         self.arena.clear();
-        for slot in &mut self.buckets {
-            *slot = NodeId::NONE;
-        }
+        self.buckets.fill(NodeId::NONE);
         self.len = 0;
     }
 
