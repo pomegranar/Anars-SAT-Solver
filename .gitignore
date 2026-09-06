@@ -16,3 +16,8 @@
 
 # splr writes an answer file per solve into its working directory
 ans_*.cnf
+
+# Generated report artefacts
+/results/report.pdf
+/results/_report/
+/results/*.log
