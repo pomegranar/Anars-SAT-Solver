@@ -36,6 +36,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -93,14 +94,26 @@ class Result:
         self.timed_out = timed_out
 
 
-def run_one(solver: str, argv: list[str], path: pathlib.Path, suite: str, timeout: float) -> Result:
-    """Runs one solver on one instance, measuring wall time and peak resident memory."""
-    command = [*argv, str(path)]
+def run_one(
+    solver: str,
+    argv: list[str],
+    path: pathlib.Path,
+    suite: str,
+    timeout: float,
+    sandbox: str,
+) -> Result:
+    """Runs one solver on one instance, measuring wall time and peak resident memory.
+
+    Runs in `sandbox` rather than the repository: splr writes an `ans_<instance>.cnf` answer
+    file into its working directory for every run, and 800 of those in the project root is not
+    a benchmark artefact anyone asked for.
+    """
+    command = [*argv, str(path.resolve())]
     started = time.perf_counter()
     peak_kb = 0
     try:
         process = subprocess.Popen(
-            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=sandbox
         )
     except OSError as exc:
         return Result(solver, path.name, suite, f"ERROR:{exc}", 0.0, 0, False)
@@ -236,18 +249,22 @@ def main() -> int:
 
     results: list[Result] = []
     started = time.perf_counter()
-    if args.jobs > 1:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futures = [pool.submit(run_one, s, a, p, su, args.timeout) for s, a, p, su in jobs]
-            for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
-                results.append(future.result())
+    with tempfile.TemporaryDirectory(prefix="dpbst-bench-") as sandbox:
+        if args.jobs > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+                futures = [
+                    pool.submit(run_one, s, a, p, su, args.timeout, sandbox)
+                    for s, a, p, su in jobs
+                ]
+                for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                    results.append(future.result())
+                    if i % 50 == 0:
+                        print(f"  {i}/{len(jobs)}", file=sys.stderr)
+        else:
+            for i, (solver, argv, path, suite) in enumerate(jobs, 1):
+                results.append(run_one(solver, argv, path, suite, args.timeout, sandbox))
                 if i % 50 == 0:
                     print(f"  {i}/{len(jobs)}", file=sys.stderr)
-    else:
-        for i, (solver, argv, path, suite) in enumerate(jobs, 1):
-            results.append(run_one(solver, argv, path, suite, args.timeout))
-            if i % 50 == 0:
-                print(f"  {i}/{len(jobs)}", file=sys.stderr)
     print(f"done in {time.perf_counter() - started:.1f}s", file=sys.stderr)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

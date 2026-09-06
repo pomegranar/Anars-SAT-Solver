@@ -12,3 +12,7 @@
 /results/*.csv
 /results/*.json
 /benchmarks/clean/
+/benchmarks/generated/
+
+# splr writes an answer file per solve into its working directory
+ans_*.cnf
