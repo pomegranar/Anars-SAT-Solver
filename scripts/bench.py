@@ -40,6 +40,24 @@ import sys
 import tempfile
 import time
 
+def performance_cores() -> int:
+    """Number of performance cores, so parallel runs do not spill onto the slow ones.
+
+    Apple silicon is heterogeneous: an M1 has four performance and four efficiency cores, and
+    macOS offers userspace no affinity control. Oversubscribing past the performance cores means
+    some runs land on efficiency cores at roughly a third of the speed, which biases whichever
+    solver happens to be scheduled there rather than adding symmetric noise.
+    """
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.perflevel0.logicalcpu"],
+            capture_output=True, text=True, check=True,
+        )
+        return max(1, int(out.stdout.strip()))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return max(1, (os.cpu_count() or 2) // 2)
+
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DPBST = ROOT / "target" / "release" / "dpbst"
 TOOLS = ROOT / "tools" / "bin"
@@ -82,10 +100,30 @@ SOLVERS: dict[str, list[str]] = {
 DEFAULT_SOLVERS = ["dpbst", "minisat", "varisat", "splr", "cadical", "kissat"]
 
 
-class Result:
-    __slots__ = ("solver", "instance", "suite", "status", "seconds", "peak_kb", "timed_out")
+# Deterministic counters reported by `dpbst --json`. These do not depend on how loaded the
+# machine is, which is what makes `--mode metrics` safe to run in parallel.
+METRIC_FIELDS = (
+    "nodes",
+    "decisions",
+    "conflicts",
+    "propagations",
+    "components",
+    "cache_lookups",
+    "cache_hits",
+    "cache_hit_rate",
+    "cache_entries",
+    "table_max_bucket",
+    "table_max_depth",
+    "table_mean_depth",
+)
 
-    def __init__(self, solver, instance, suite, status, seconds, peak_kb, timed_out):
+
+class Result:
+    __slots__ = (
+        "solver", "instance", "suite", "status", "seconds", "peak_kb", "timed_out", "metrics",
+    )
+
+    def __init__(self, solver, instance, suite, status, seconds, peak_kb, timed_out, metrics=None):
         self.solver = solver
         self.instance = instance
         self.suite = suite
@@ -93,6 +131,7 @@ class Result:
         self.seconds = seconds
         self.peak_kb = peak_kb
         self.timed_out = timed_out
+        self.metrics = metrics or {}
 
 
 def run_one(
@@ -108,13 +147,18 @@ def run_one(
     Runs in `sandbox` rather than the repository: splr writes an `ans_<instance>.cnf` answer
     file into its working directory for every run, and 800 of those in the project root is not
     a benchmark artefact anyone asked for.
+
+    For dpbst configurations the solver's own `--json` statistics are captured from stderr, so a
+    run yields deterministic counters as well as a time.
     """
-    command = [*argv, str(path.resolve())]
+    wants_json = solver.startswith("dpbst")
+    command = [*argv, *(["--json"] if wants_json else []), str(path.resolve())]
     started = time.perf_counter()
     peak_kb = 0
+    stats_sink = subprocess.PIPE if wants_json else subprocess.DEVNULL
     try:
         process = subprocess.Popen(
-            command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=sandbox
+            command, stdout=subprocess.DEVNULL, stderr=stats_sink, cwd=sandbox
         )
     except OSError as exc:
         return Result(solver, path.name, suite, f"ERROR:{exc}", 0.0, 0, False)
@@ -141,6 +185,24 @@ def run_one(
         code = process.wait()
 
     seconds = time.perf_counter() - started
+
+    metrics: dict[str, str] = {}
+    if wants_json and process.stderr is not None:
+        try:
+            raw = process.stderr.read().decode("utf-8", "replace")
+        except (OSError, ValueError):
+            raw = ""
+        finally:
+            process.stderr.close()
+        # The JSON object is the last line; warnings may precede it.
+        for line in reversed(raw.strip().splitlines()):
+            if line.startswith("{"):
+                try:
+                    metrics = json.loads(line)
+                except json.JSONDecodeError:
+                    metrics = {}
+                break
+
     if timed_out:
         status = "TIMEOUT"
     elif code in CODE_TO_STATUS:
@@ -149,7 +211,7 @@ def run_one(
         status = "UNKNOWN"
     else:
         status = f"ERROR:{code}"
-    return Result(solver, path.name, suite, status, seconds, peak_kb, timed_out)
+    return Result(solver, path.name, suite, status, seconds, peak_kb, timed_out, metrics)
 
 
 def header_matches_body(path: pathlib.Path) -> bool:
@@ -246,6 +308,51 @@ def summarize(results: list[Result], solvers: list[str], timeout: float) -> str:
     return "\n".join(lines)
 
 
+def summarize_metrics(results: list[Result], solvers: list[str]) -> str:
+    """Builds a markdown table of the solver's own deterministic counters.
+
+    None of these depend on machine load, so unlike `summarize` this is meaningful even when the
+    runs were executed in parallel.
+    """
+    suites = sorted({r.suite for r in results})
+    lines = []
+    for suite in suites:
+        lines.append(f"\n### {suite}\n")
+        lines.append(
+            "| config | solved | search nodes | components | memo hits | hit rate | "
+            "entries | max bucket | mean depth |"
+        )
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for solver in solvers:
+            subset = [
+                r for r in results
+                if r.suite == suite and r.solver == solver and r.metrics
+            ]
+            if not subset:
+                continue
+            solved = [r for r in subset if r.status in ("SAT", "UNSAT")]
+
+            def total(field: str) -> float:
+                return sum(float(r.metrics.get(field, 0) or 0) for r in subset)
+
+            lookups = total("cache_lookups")
+            hits = total("cache_hits")
+            rate = hits / lookups if lookups else 0.0
+            depths = [
+                float(r.metrics["table_mean_depth"])
+                for r in subset
+                if float(r.metrics.get("table_mean_depth", 0) or 0) > 0
+            ]
+            buckets = [int(r.metrics.get("table_max_bucket", 0) or 0) for r in subset]
+            lines.append(
+                f"| `{solver}` | {len(solved)}/{len(subset)} | {total('nodes'):.0f} | "
+                f"{total('components'):.0f} | {hits:.0f} | {rate * 100:.1f}% | "
+                f"{total('cache_entries'):.0f} | {max(buckets, default=0)} | "
+                f"{statistics.mean(depths) if depths else 0.0:.2f} |"
+            )
+    return "\n".join(lines)
+
+
 def check_agreement(results: list[Result]) -> tuple[list[str], list[str]]:
     """Finds instances where solvers returned conflicting verdicts.
 
@@ -283,13 +390,30 @@ def main() -> int:
     parser.add_argument("--suites", nargs="+", default=["uf50-218:50", "uuf50-218:50"],
                         help="suite specifications as NAME or NAME:COUNT")
     parser.add_argument("--timeout", type=float, default=10.0, help="per-instance seconds")
-    parser.add_argument("--jobs", type=int, default=1,
-                        help="parallel runs; keep at 1 for trustworthy timings")
-    parser.add_argument("--mode", choices=["time", "validate"], default="time")
+    parser.add_argument(
+        "--jobs", type=int, default=0,
+        help="parallel runs. Defaults to 1 for --mode time (concurrent runs contend for cache "
+             "and memory bandwidth, and on Apple silicon the surplus lands on the slower "
+             "efficiency cores) and to the performance-core count otherwise, where only "
+             "load-independent counters are reported.",
+    )
+    parser.add_argument(
+        "--mode", choices=["time", "metrics", "validate"], default="time",
+        help="time: wall-clock comparison, run sequentially. metrics: the solver's own "
+             "deterministic counters, safe to run in parallel. validate: verdicts only.",
+    )
     parser.add_argument("--out", type=pathlib.Path, default=ROOT / "results" / "bench.csv")
     parser.add_argument("--markdown", type=pathlib.Path, default=None,
                         help="also write the summary table here")
     args = parser.parse_args()
+
+    if args.jobs <= 0:
+        args.jobs = 1 if args.mode == "time" else performance_cores()
+    if args.mode == "time" and args.jobs > 1:
+        print(
+            f"warning: --mode time with --jobs {args.jobs}; concurrent runs distort timings",
+            file=sys.stderr,
+        )
 
     unknown = [s for s in args.solvers if s not in SOLVERS]
     if unknown:
@@ -333,9 +457,14 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["solver", "suite", "instance", "status", "seconds", "peak_kb"])
+        writer.writerow(
+            ["solver", "suite", "instance", "status", "seconds", "peak_kb", *METRIC_FIELDS]
+        )
         for r in sorted(results, key=lambda r: (r.suite, r.instance, r.solver)):
-            writer.writerow([r.solver, r.suite, r.instance, r.status, f"{r.seconds:.6f}", r.peak_kb])
+            writer.writerow([
+                r.solver, r.suite, r.instance, r.status, f"{r.seconds:.6f}", r.peak_kb,
+                *(r.metrics.get(f, "") for f in METRIC_FIELDS),
+            ])
     print(f"wrote {args.out}", file=sys.stderr)
 
     problems, ours = check_agreement(results)
@@ -347,8 +476,12 @@ def main() -> int:
         if not ours:
             print("  (dpbst agreed with the majority everywhere)", file=sys.stderr)
 
-    if args.mode == "time":
-        table = summarize(results, args.solvers, args.timeout)
+    if args.mode in ("time", "metrics"):
+        table = (
+            summarize(results, args.solvers, args.timeout)
+            if args.mode == "time"
+            else summarize_metrics(results, args.solvers)
+        )
         print(table)
         if args.markdown:
             args.markdown.parent.mkdir(parents=True, exist_ok=True)
