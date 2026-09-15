@@ -133,7 +133,7 @@ fn bench_bucket_policies(c: &mut Criterion) {
     group.sample_size(20);
     for (name, formula) in &instances {
         for bucket in BucketKind::ALL {
-            group.bench_with_input(BenchmarkId::new(*name, bucket), bucket, |b, &bucket| {
+            group.bench_with_input(BenchmarkId::new(*name, bucket), &bucket, |b, &bucket| {
                 let config = Config {
                     bucket,
                     ..Config::default()
