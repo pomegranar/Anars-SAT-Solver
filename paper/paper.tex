@@ -23,7 +23,7 @@ Hash Table of Binary Search Trees for Boolean Satisfiability}
 \begin{abstract}
 This paper describes and evaluates DP-BST, a satisfiability (SAT) solver that combines the
 Davis--Putnam--Logemann--Loveland (DPLL) search procedure with a dynamic-programming cache of
-previously solved formula components. The cache is keyed on the connected components that the
+previously solved formula components and with conflict-driven clause learning. The cache is keyed on the connected components that the
 residual formula decomposes into once a subset of variables has been assigned, and is stored in a
 hash table whose collision buckets are binary search trees rather than the linked lists used by
 textbook separate chaining. Four bucket implementations, an AVL tree, an unbalanced binary search
@@ -34,14 +34,21 @@ detection instances, against five reference solvers occupying three distinct poi
 performance spectrum: Kissat, representing the current state of the art; CaDiCaL, a widely used
 modern standard; and MiniSat, the established baseline against which most subsequent solvers have
 been measured, together with two contemporary solvers written in the same implementation
-language, varisat and splr. The results show that component caching yields a memoisation hit rate
-exceeding thirty percent on several structured families and a corresponding reduction in search
-nodes, while providing no benefit on uniform random instances whose constraint graphs do not
-decompose. The absence of conflict-driven clause learning leaves a penalised average runtime
-roughly five times that of Kissat over the full benchmark set. Within the cache itself, ordering
-each bucket as a balanced binary search tree reduces the mean number of comparisons per lookup by
-thirteen percent relative to a linked list at the load factors exercised, with the difference
-widening as bucket occupancy grows.
+language, varisat and splr. The solver additionally implements first-UIP clause learning, and the
+conditions under which learning and component caching can be combined soundly are set out: learned
+clauses must participate in decomposition and appear in the cache key, since concealing them to
+protect the decomposition breaks the independence the cache relies on. The results show that
+component caching yields a memoisation hit rate exceeding thirty percent on several structured
+families and a corresponding reduction in search nodes, while providing no benefit on uniform
+random instances whose constraint graphs do not decompose, and that clause learning is worth
+having only under a severe length restriction, three literals, because the counter-based
+propagation the decomposition requires charges every retained clause on every assignment to every
+variable it mentions. Retaining every derived clause is worse than learning nothing at all on
+uniform random instances. Together the two mechanisms leave a penalised average runtime roughly
+three and a half times that of Kissat over the full benchmark set. Within the cache itself,
+ordering each bucket as a balanced binary search tree reduces the mean number of comparisons per
+lookup relative to a linked list at the load factors exercised, with the difference widening as
+bucket occupancy grows.
 \end{abstract}
 
 \section{Introduction}
@@ -56,15 +63,19 @@ architecture since the mid-1990s has been conflict-driven clause learning (CDCL)
 together with a decision heuristic, VSIDS, that is driven by the variables appearing in those
 learned clauses.
 
-This paper takes a different, and considerably less common, route to reducing search: rather than
+This paper takes a different, and considerably less common, route to reducing search: alongside
 learning from conflicts, the solver described here recognises when the residual formula at a
 search node factors into independent subproblems and remembers the outcome of each subproblem so
 that it need not be resolved when the same subproblem is reached again by a different sequence of
 decisions. This technique, component caching, is a direct application of dynamic programming to
 the search tree and has an established history in exact model counting
-\cite{bayardo2000,sang2004,thurley2006}, but is comparatively rarely used as the primary
-acceleration mechanism in a decision-only SAT solver, where clause learning has instead become the
-default.
+\cite{bayardo2000,sang2004,thurley2006}, but is comparatively rarely used as an acceleration
+mechanism in a decision-only SAT solver, where clause learning alone has become the default.
+
+The two are usually treated as alternatives, and for a structural reason: a clause derived from a
+conflict mentions whichever variables that conflict involved, and those need not lie in a single
+component, so adding it merges the components it spans. This paper reports what happens when they
+are combined anyway, and finds that the anticipated obstacle is not the binding one.
 
 The specific question this paper investigates is architectural rather than algorithmic: given
 that the cache must be implemented as a hash table, does the internal structure of each collision
@@ -75,21 +86,26 @@ replaces the linked list with a binary search tree ordered by the full sixty-fou
 cache key, and compares four bucket policies, an AVL tree, an unbalanced binary search tree, a
 splay tree, and the linked list retained as a control, under otherwise identical search traffic.
 
-The contributions of this paper are threefold. First, a working DPLL solver, DP-BST, is described
-that performs connected-component decomposition and memoisation without clause learning, together
-with the classical Davis--Putnam resolution procedure \cite{davis1960} and a bounded form of it
-used as a preprocessor \cite{een2005}. Second, the solver is evaluated against five established
-and current reference solvers on 136 instances from fourteen benchmark families, using the
-penalised average runtime (PAR-2) scoring rule standard to the SAT Competition. Third, the four
-bucket policies are compared directly on the deterministic counters the cache itself reports,
-isolating the data structure question from the considerable noise introduced by process
-scheduling and memory bandwidth contention on the shared evaluation hardware.
+The contributions of this paper are fourfold. First, a working DPLL solver, DP-BST, is described
+that performs connected-component decomposition, memoisation, and first-UIP clause learning
+together, along with the classical Davis--Putnam resolution procedure \cite{davis1960} and a
+bounded form of it used as a preprocessor \cite{een2005}. Second, the conditions under which
+learning and component caching can be combined soundly are set out, and the cost of doing so is
+measured: it falls not on the decomposition, as is usually supposed, but on the cache key and on
+propagation throughput. Third, the solver is evaluated against five established and current
+reference solvers on 136 instances from fourteen benchmark families, using the penalised average
+runtime (PAR-2) scoring rule standard to the SAT Competition. Fourth, the four bucket policies are
+compared directly on the deterministic counters the cache itself reports, isolating the data
+structure question from the considerable noise introduced by process scheduling and memory
+bandwidth contention on the shared evaluation hardware.
 
-The principal negative result is stated here rather than deferred: a solver without clause
-learning does not compete with one that has it, and this paper does not claim otherwise. The
-purpose of the comparison is to characterise, honestly and with error handling made explicit,
-exactly where component caching helps, where it does not, and what a tree-structured hash bucket
-buys over the conventional linked list once that characterisation is in hand.
+The principal negative result is stated here rather than deferred: a solver with this narrow a
+form of clause learning, and without the restart, deletion and activity machinery that surrounds
+it in a modern implementation, does not compete with one that has all of it, and this paper does
+not claim otherwise. The purpose of the comparison is to characterise, honestly and with error
+handling made explicit, exactly where component caching helps, where it does not, what learning
+adds once the two are made to coexist, and what a tree-structured hash bucket buys over the
+conventional linked list.
 
 \section{Background and Related Work}
 
@@ -110,8 +126,10 @@ reaching a contradiction, the search analyses the implication graph to derive a 
 would have prevented the conflict, adds it to the formula, and backtracks non-chronologically to
 the point where that clause becomes unit. The variable activity heuristic VSIDS, which favours
 variables occurring frequently in recently learned clauses, is what makes the resulting search
-effective in practice. DP-BST implements neither mechanism; its branching heuristics operate
-instead on the literal statistics of the residual formula, as described in Section~III.
+effective in practice. DP-BST implements clause learning, in the first-UIP form with
+non-chronological backjumping, but not VSIDS: its branching heuristics operate instead on the
+literal statistics of the residual formula, as described in Section~III. The interaction between
+learning and component caching is the subject of Section~III-C.
 
 \subsection{Component caching}
 
@@ -120,7 +138,8 @@ assignment frequently partition into groups sharing no variable in common. Each 
 termed a component, can be solved independently, and the same component is often reached again
 later in the search by a different order of decisions. Bayardo and Pehoushek
 \cite{bayardo2000} first exploited this observation to accelerate model counting; Sang et
-al.\ combined it with clause learning in Cachet \cite{sang2004}; and Thurley's sharpSAT
+al.\ combined it with clause learning in Cachet \cite{sang2004}, which is the closest prior work
+to the combination evaluated here; and Thurley's sharpSAT
 \cite{thurley2006} refined the cache-key representation and introduced the activity-based
 eviction policy this paper's cache adopts. A component is named by the pair of its unassigned
 variables and its currently active clauses, both as sorted index sets; this pair determines the
@@ -158,7 +177,7 @@ C or C++.
 DP-BST follows the pipeline common to preprocessing SAT solvers: the input is parsed, normalised,
 simplified by bounded variable elimination and unit propagation, and handed to a DPLL search that
 performs connected-component decomposition and consults the cache at every search node before
-branching. Two implementation decisions are specific to this work and are summarised here; a
+branching. Three implementation decisions are specific to this work and are summarised here; a
 complete description is maintained in the project repository.
 
 \subsection{Propagation by counters rather than watched literals}
@@ -187,6 +206,49 @@ this bound in the worst case, and the splay tree instead adapts its shape to the
 observed in cache traffic. All four policies, together with the linked list retained as a control,
 share one underlying node arena, addressed by index rather than pointer, so that the comparison
 isolates the ordering discipline of the bucket from unrelated allocator effects.
+
+\subsection{Clause learning under component caching}
+
+Conflict-driven clause learning and component caching are usually presented as alternatives, and
+the reason is structural rather than incidental: a clause derived from a conflict mentions
+whichever variables that conflict involved, and those variables need not lie within a single
+component. Adding the clause therefore merges the components it spans, reducing exactly the
+decomposition the cache exists to exploit.
+
+DP-BST implements first-UIP learning \cite{marques-silva1999} with non-chronological backjumping,
+and resolves the conflict with component caching by declining the obvious shortcut. Concealing
+learned clauses from the component analyser would preserve the decomposition, but it is unsound:
+two components are independent only in the absence of an active clause joining them, so a
+concealed clause could be falsified by an assignment within one component and force an assignment
+within another. A component's verdict would then no longer be a property of that component alone,
+while the cache key, which does not mention the concealed clause, would assert that it is.
+
+Learned clauses are therefore treated as ordinary clauses throughout: they enter the occurrence
+lists, participate in decomposition, and appear by index in the cache key. The soundness argument
+of Section~II is unaffected, since it depends only on the key naming the active
+clause set and not on the provenance of those clauses. The cost is borne by the hit rate instead:
+a component encountered before a given clause is learned and again afterwards receives two
+distinct keys and is solved twice.
+
+Two further consequences follow from keying on clause indices. Learned clauses are never deleted,
+because recycling an index would silently alter the meaning of cache entries already stored; the
+database is bounded by a literal budget instead, beyond which learning ceases. And because
+propagation is by clause counters rather than watched literals, a retained clause is charged on
+every assignment to every variable it mentions, where a watched-literal solver would leave it
+untouched until one of two designated literals is falsified. Long clauses are consequently the
+least favourable case for this architecture, combining the highest propagation cost with the
+weakest pruning, and a derived clause exceeding a configurable length is discarded rather than
+stored, the search reverting to chronological backtracking for that conflict. The length limit
+was selected by sweeping it over the benchmark set under the PAR-2 rule rather than chosen a
+priori.
+
+One detail is specific to this solver. Pure literal elimination assigns a variable without a
+reason clause: purity preserves satisfiability but is not an implication, and there is
+consequently nothing for resolution to proceed through. A decision level here may therefore carry
+several reason-free assignments, unlike in a conventional CDCL solver, and resolution terminates
+at each of them as it terminates at a decision. The derived clause remains a valid resolvent, but
+it need not be asserting, and when it is not, no backjump is justified and the search backtracks
+by one level.
 
 \section{Experimental Setup}
 
@@ -278,11 +340,14 @@ varisat alone.
 
 Table~\ref{tab:par2} summarises PAR-2 score and solve count across all 136 instances. Kissat
 attains the lowest, and therefore best, PAR-2 score, consistent with its position as the current
-state of the art. DP-BST attains the highest PAR-2 score of the six solvers compared, driven
-principally by fourteen instances, concentrated in the uuf250-1065 and QG families, on which it
-does not terminate within the time limit while every reference solver does. varisat's score is
-inflated by the twelve ssa parse failures discussed above rather than by search performance; with
-those instances excluded, its PAR-2 score is comparable to CaDiCaL and splr.
+state of the art. DP-BST solves 129 of the 136 instances, behind the 133 to 134 solved by MiniSat,
+CaDiCaL, splr and Kissat, and its PAR-2 score is roughly three and a half times Kissat's. Its
+seven unsolved instances fall in three families: three quasigroup completion instances, two
+pigeonhole instances, and two uuf250-1065 instances. Two of those families are not solved
+outright by the reference solvers either, Kissat likewise failing on two pigeonhole instances.
+varisat's score is inflated by the parse failures discussed above rather than by search
+performance; with the affected instances excluded, its PAR-2 score is comparable to CaDiCaL and
+splr.
 
 \begin{figure*}[t]
 \centering
@@ -291,7 +356,8 @@ those instances excluded, its PAR-2 score is comparable to CaDiCaL and splr.
 each solver (a cactus plot). A curve further to the right solves more instances within a given
 time budget; a curve lower on the page solves the same rank of instance faster. DP-BST tracks the
 reference solvers closely over the easiest half of the benchmark set and separates from them on
-the harder instances where the absence of clause learning is most exposed.}
+the harder instances, where the narrowness of its clause learning and the cost of counter-based
+propagation are most exposed.}
 \label{fig:cactus}
 \end{figure*}
 
@@ -372,14 +438,24 @@ Figure~\ref{fig:hitrate} reports the fraction of component lookups answered dire
 cache, for the families in which the cache was consulted at all. The php family, pigeonhole
 instances that are unsatisfiable by construction, shows the highest hit rate at 48.5\%, consistent
 with the high degree of structural symmetry between pigeons that pigeonhole encodings are known
-for. The bf and ssa circuit fault families follow at 37.3\% and 36.9\% respectively. The dubois
-family records a hit rate of exactly zero: inspection of the corresponding ablation data
-(Section~V-F) shows that these instances are in fact solved almost entirely by bounded variable
-elimination during preprocessing, with the search proper, and therefore the cache, contributing
-negligibly. This is reported as a genuine finding rather than smoothed over: the two forms of
-dynamic programming this solver implements, resolution-based elimination and component caching,
-are not uniformly useful on the same instances, and attributing dubois's tractability to the cache
-would have been incorrect.
+for. The dubois family follows at 45.1\% and the ssa circuit fault family at 38.7\%.
+
+The dubois figure requires comment, because with clause learning disabled the same family records
+a hit rate of exactly zero. The cause is not that learning improves the cache in general; it is
+that the clauses learned on these instances fix enough variables for the residual formula to
+decompose into components that then recur, where previously the search reached each subproblem by
+a single route. The effect runs in the opposite direction on aim, where learning reduces the
+search from 2.6 million nodes to 591 and the hit rate falls from 17.9\% to 1.5\%: there is
+almost nothing left for the cache to be consulted about. Both are instances of the same underlying
+point, that the cache key is a function of the clause set and therefore of what has been learned,
+and neither is predictable from the family alone.
+
+More generally, the two forms of dynamic programming this solver implements, resolution-based
+elimination and component caching, are not uniformly useful on the same instances. Disabling
+preprocessing alone on the php family reduces search nodes from 1.1 million to 73 thousand and
+converts two timeouts into solves, because bounded variable elimination accepts resolvents on
+clause-count grounds while being blind to the connectivity of the variable interaction graph that
+decomposition depends on. That is reported here rather than smoothed over.
 
 \subsection{Bucket policy}
 
@@ -401,49 +477,130 @@ which the cache was consulted.}
 
 Table~\ref{tab:buckets} and Figure~\ref{fig:bucket} isolate the question this paper set out to
 answer. At the load factor exercised in these experiments, the AVL tree reduces mean comparisons
-per lookup by 13\% relative to the linked list (1.39 against 1.60) and reduces the maximum
-observed depth by exactly half (2.8 against 5.6). The unbalanced tree and the splay tree fall
-between these two extremes, both benefiting from the randomisation of insertion order that
-storing entries by hash value rather than by raw key induces, as argued in Section~III, without
-either matching the worst-case guarantee the AVL tree provides. The absolute magnitude of the mean
-depth improvement is modest at the load factor of four entries per bucket used by default; the
-maximum depth column indicates that the advantage would be expected to widen at higher load
-factors, where an unbalanced structure is more exposed to the tail of its depth distribution, a
-regime not exercised at length in the present experiments and left to future work.
+per lookup by 4\% relative to the linked list (1.14 against 1.19) and reduces the maximum
+observed depth by 30\% (1.9 against 2.7). The unbalanced tree and the splay tree fall between
+these two extremes, both benefiting from the randomisation of insertion order that storing
+entries by hash value rather than by raw key induces, as argued in Section~III, without either
+matching the worst-case guarantee the AVL tree provides.
+
+Two caveats belong with these figures rather than after them. The first is that the mean depth
+improvement is small in absolute terms, and smaller than the equivalent measurement taken before
+clause learning was added, because learning reduces the number of distinct components reaching
+the cache on precisely the families that previously filled it. The second is that averaging over
+instances weights the many small caches equally with the few large ones, and it is the large
+caches where the structure matters: on the php family alone, whose cache holds 590 thousand
+entries, the corresponding figures are 1.47 against 1.68. The direction of the effect is
+consistent across every family and every weighting, but its magnitude is a function of load, and
+the regime where a balanced structure would be expected to matter most is not the regime these
+experiments spend most of their time in.
+
+\subsection{Clause learning}
+
+\begin{table}[t]
+\caption{Clause learning configurations over the timed benchmark set}
+\label{tab:learning}
+\centering
+\input{tables/tab_learning}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.92\textwidth]{fig_learning}
+\caption{PAR-2 seconds summed over all instances in each family, with clause learning enabled at
+the default three-literal retention limit, disabled entirely, and enabled with every derived
+clause retained regardless of length. Note the logarithmic scale. PAR-2 rather than search node
+count is plotted here because learning reduces node count on essentially every instance; whether
+it reduces time is the question at issue.}
+\label{fig:learning}
+\end{figure*}
+
+Table~\ref{tab:learning} and Figure~\ref{fig:learning} compare three configurations: learning at
+the default retention limit, learning disabled, and learning with no length limit at all. The
+three rows of Table~\ref{tab:learning} make the central point of this section on their own.
+Learning at the default limit solves 129 of 136 instances against 126 without it, and reduces the
+search by a factor of nearly nine on the instances every configuration solves. Removing the limit
+reduces the search further still, to fewer nodes than any other configuration, and is nonetheless
+the worst of the three by a wide margin, solving 117 instances with a PAR-2 score of 2.96 against
+2.10 for not learning at all. Retaining every derived clause buys the smallest search tree and the
+longest runtime.
+
+That is the whole argument for measuring this on wall-clock time rather than on search nodes.
+Search nodes answer the wrong question: learning removes them on almost every instance, and the
+architectural question is whether the clauses retained cost more in propagation than the nodes
+they save.
+
+The retention limit is what decides it. Swept over the subset of families on which the choice has
+any effect, PAR-2 falls from 138.3 seconds with learning disabled to 106.1 seconds at a limit of
+three literals, and rises again to 141.2 seconds at four, at which point one further instance is
+lost to timeout. The damage done by removing the limit is concentrated on the uniform random
+families, where derived clauses are longest: the unbounded configuration solves none of the eight
+uuf250-1065 instances and four of the eight uf250-1065 instances, against six and eight
+respectively for the default. Under counter-based propagation a clause of seventeen literals is
+inspected on every assignment to each of those seventeen variables. A limit of three literals is
+far below what any watched-literal solver would impose, and follows from the propagation scheme
+described in Section~III-A rather than from any property of the instances.
+
+The families on which learning is most effective are those with a small backbone reachable by
+short resolution, aim above all, where it is the difference between solving an instance in
+milliseconds and not solving it within the limit. The families on which it is least effective are
+those for which no short clause is derivable at all: on pigeonhole instances, where every
+resolution proof is known to be exponential, essentially every derived clause exceeds the
+retention limit and is discarded, and the configuration reduces exactly to the one without
+learning. That is reported as a finding rather than as a shortfall; it is the behaviour the theory
+predicts.
 
 \subsection{Ablation}
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.92\textwidth]{fig_ablation}
-\caption{Search nodes summed over all instances in each family, under five configurations: the
-full solver; the memo disabled; pure literal elimination disabled; preprocessing disabled; and
-plain DPLL, which disables component decomposition, the memo, and preprocessing simultaneously.
-Note the logarithmic scale.}
+\caption{Search nodes summed over all instances in each family, under seven configurations: the
+full solver; clause learning disabled; the memo disabled; both disabled; pure literal elimination
+disabled; preprocessing disabled; and plain DPLL, which disables component decomposition, the
+memo, learning, and preprocessing simultaneously. Note the logarithmic scale.}
 \label{fig:ablation}
 \end{figure*}
 
-Figure~\ref{fig:ablation} shows search node counts under five configurations. Disabling
-preprocessing alone produces the largest increase in search nodes on the dubois family, by more
-than three orders of magnitude, corroborating the zero cache hit rate reported above and confirming
-that bounded variable elimination, not component caching, is responsible for that family's
-tractability. On the chain family, by contrast, disabling the memo alone increases search nodes by
-more than an order of magnitude while disabling preprocessing has comparatively little effect,
-indicating that component reuse is doing the substantive work on that family. Plain DPLL, which
-removes decomposition, the memo, and preprocessing together, is uniformly the worst or tied-worst
-configuration across every family shown.
+Figure~\ref{fig:ablation} shows search node counts under seven configurations. The largest single
+effect anywhere in the table is clause learning on the aim family, where disabling it raises the
+node count from 591 to 2.6 million, a factor of four thousand. Plain DPLL, which removes
+decomposition, the memo, learning, and preprocessing together, is uniformly the worst or
+tied-worst configuration across every family shown, by more than four orders of magnitude on
+dubois.
+
+The two mechanisms are not independent, and the table makes the dependence legible in both
+directions. On aim and dubois, learning is doing nearly all of the work and the memo is almost
+irrelevant once it is enabled: disabling the memo alone changes the aim node count from 591 to
+601. On chain, the reverse holds, with the memo removing more than an order of magnitude once
+learning is already present, and on php learning is exactly inert, the configurations with and
+without it producing byte-identical counters because every derived clause exceeds the retention
+limit. On ssa and blocks learning slightly increases the node count, from 7,292 to 8,724 and from
+506 to 603 respectively, which is the clearest available illustration of the key-churn effect of
+Section~III-C: the clauses learned are not useful enough on those families to pay for the
+component identities they disturb.
 
 \section{Discussion and Threats to Validity}
 
-The central limitation of this work is the absence of conflict-driven clause learning. Component
-caching and clause learning are not straightforwardly compatible: a learned clause that spans two
-otherwise independent components merges them, destroying the decomposition the cache depends on.
-Solvers that combine both mechanisms exist \cite{sang2004} but require careful bookkeeping to
-reconcile the two; DP-BST does not attempt this, and the fourteen timeouts recorded in
-Section~V-A are the direct, and expected, consequence of that omission on instances whose
-structure does not otherwise decompose.
+The central limitation of this work is no longer the absence of conflict-driven clause learning,
+which Section~III-C describes, but the narrowness of the form in which it is present. DP-BST
+derives and retains clauses and backjumps on them; it does not do any of the rest of what makes a
+CDCL solver fast. There is no activity-based clause deletion, no restart policy, no phase saving,
+and no VSIDS. Clause deletion in particular is excluded by construction rather than by omission:
+the cache key names clauses by index, so retiring a clause would alter the meaning of entries
+already stored. A reduction policy that retires clauses together with the cache entries naming
+them is the most obvious extension of this work, and would remove the literal budget that
+currently stands in for one.
 
-A second limitation is the counter-based propagation scheme described in Section~III, adopted
+The second limitation is the length restriction that makes learning worth having here at all.
+Retaining a clause of any length is what a watched-literal solver does; under counter-based
+propagation it is affordable only for very short clauses, and the swept optimum is three literals.
+That is not a tuning detail but a statement about the architecture: the propagation scheme adopted
+to make decomposition tractable is the same one that makes most learned clauses unaffordable, and
+the two design decisions are therefore not independent. The families on which learning is
+measurably unable to help, pigeonhole most clearly, are those for which no short clause is
+derivable in the first place.
+
+A third limitation is the counter-based propagation scheme described in Section~III, adopted
 specifically to expose clause satisfaction status to the component analyser at the cost of
 touching more clauses per assignment than a watched-literal scheme would. This cost is present on
 every instance, including those the cache does not help, and is visible as the near-uniform
@@ -463,19 +620,31 @@ hardware.
 
 \section{Conclusion}
 
-This paper presented DP-BST, a DPLL-based SAT solver whose principal acceleration mechanism is
-dynamic-programming component caching rather than conflict-driven clause learning, and evaluated
-both the solver as a whole and the internal structure of its cache. Against five reference
-solvers spanning the established, standard, and current state of the art, DP-BST does not compete
-on aggregate runtime, a consequence of the clause-learning it forgoes and of the counter-based
-propagation its decomposition analysis requires. It nonetheless demonstrates a clear and
-measurable benefit from component reuse on instance families whose constraint structure permits
-decomposition, with memoisation hit rates exceeding thirty percent and corresponding reductions in
-search nodes on several such families, and a null result, honestly reported rather than obscured,
-on families where decomposition does not occur. Within the cache, ordering collision buckets as
-balanced binary search trees measurably reduces the comparisons required per lookup relative to
-the conventional linked list, confirming the paper's starting hypothesis at the load factor tested
-and motivating further measurement at higher load, where the effect is expected to be larger.
+This paper presented DP-BST, a DPLL-based SAT solver that combines dynamic-programming component
+caching with conflict-driven clause learning, and evaluated the solver as a whole, the interaction
+between its two acceleration mechanisms, and the internal structure of its cache. Against five
+reference solvers spanning the established, standard, and current state of the art, DP-BST does
+not compete on aggregate runtime, a consequence of the narrowness of its clause learning and of
+the counter-based propagation its decomposition analysis requires. It nonetheless demonstrates a
+clear and measurable benefit from component reuse on instance families whose constraint structure
+permits decomposition, and a null result, honestly reported rather than obscured, on families
+where decomposition does not occur.
+
+The paper's more transferable finding concerns the interaction rather than either mechanism
+alone. Learning and component caching can be made to coexist soundly, and the price is not the
+one usually anticipated: it is not that the decomposition collapses, but that naming components by
+their active clause set makes the cache key change every time a clause is learned, so the same
+subproblem is solved twice under two names. What decides whether learning pays at all is the
+propagation scheme. Counter-based propagation, adopted precisely to make decomposition possible,
+charges every retained clause on every assignment to every variable it mentions, and under that
+charge only very short clauses are worth keeping. Retaining every derived clause is worse than
+learning nothing at all on uniform random instances. Both design decisions are individually
+defensible and jointly constraining, which is the observation this paper would carry forward.
+
+Within the cache, ordering collision buckets as balanced binary search trees measurably reduces
+the comparisons required per lookup relative to the conventional linked list, confirming the
+paper's starting hypothesis at the load factor tested and motivating further measurement at higher
+load, where the effect is expected to be larger.
 
 \begin{thebibliography}{99}
 

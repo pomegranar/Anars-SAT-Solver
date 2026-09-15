@@ -194,3 +194,68 @@ The obvious next experiment is a width-aware acceptance rule for elimination:
 reject a resolvent that increases the variable interaction graph's connectivity,
 even when it reduces the clause count. On pigeonhole that rule declines every
 elimination BVE currently accepts.
+
+---
+
+## Postscript, 2026-09-15: clause learning was added
+
+Everything above audits the solver as it stood on 7 September, which did not learn
+clauses. It does now, and Claim 2 above — "component caching *without* clause
+learning" — no longer describes what shipped. The audit is left as written rather
+than revised, because an audit that edits itself to stay correct is not an audit.
+What follows is what changed and which of the findings above survived.
+
+**The headline number moved.** PAR-2 against Kissat's 0.46 is 1.68, not 2.54.
+Unsolved instances fell from fourteen to seven. DP-BST now ties Kissat exactly on
+`aim` and matches it on `php`. Reproduction is still not a contribution, but the
+reproduction is a good deal closer to the thing being reproduced.
+
+**Claim 2 is now a different claim, and a better one.** "The two mechanisms
+conflict, because a learned clause spanning two components merges them" is the
+received reason for not combining them, and it is the reason the design document
+gave. Having built it, the received reason is not the binding one. What actually
+happens is that learned clauses must appear in the cache key — concealing them to
+protect the decomposition is *unsound*, not merely awkward — so the key changes
+every time a clause is learned, and the same subproblem is solved twice under two
+names. The cost lands on the hit rate, not on the decomposition.
+
+The data shows this cutting both ways, which is the part worth keeping. On `aim`,
+learning takes the search from 2,622,919 nodes to 591 and the hit rate falls from
+17.9% to 1.5%: the cache is starved of work. On `dubois` the hit rate goes from
+0% to 45.1%, because the learned clauses fix enough variables for the residual to
+decompose into components that then recur. On `ssa` and `blocks` learning slightly
+*increases* the node count, 7,292 to 8,724 and 506 to 603, which is the clean
+statement of the effect: the clauses learned there do not pay for the component
+identities they disturb.
+
+**The finding above generalises to a third mechanism.** The audit's conclusion was
+that this solver's two dynamic programming mechanisms interfere, and that which one
+wins is a property of the instance family. That holds with three. Learning is inert
+on `php` — every derived clause exceeds the retention limit and is discarded, so
+the configurations with and without it produce byte-identical counters — for the
+same reason BVE is destructive there: pigeonhole has no short resolution proof and
+no low-connectivity elimination. One property of the family predicts both.
+
+**A new finding, and it is about the propagation scheme, not the cache.** The
+retention limit is three literals. That is absurd by CDCL standards, and it is
+forced: counter-based propagation charges a stored clause on every assignment to
+every variable it mentions. Measured, the three configurations are
+
+| | solved | PAR-2 | nodes on commonly solved instances |
+|---|---:|---:|---:|
+| learning, limit 3 | 129/136 | 1.68 | 370,447 |
+| no learning | 126/136 | 2.10 | 3,249,334 |
+| learning, no limit | 117/136 | 2.96 | 198,801 |
+
+Unbounded learning produces the *smallest search tree of the three* and the
+*worst runtime of the three*, losing nine instances relative to not learning at
+all. The propagation scheme adopted to make decomposition possible is the same one
+that makes most learned clauses unaffordable. Those two design decisions are
+individually defensible and jointly constraining, and that is a sharper statement
+than either of the paper's original three claims.
+
+**The bucket-policy verdict is unchanged, and slightly worse.** Mean depth is now
+1.14 for AVL against 1.19 for chaining, a 4% reduction rather than 13%, because
+learning removes components from the cache on the families that used to fill it.
+The recommendation above — cut it to an implementation note — stands, and the new
+number strengthens it.

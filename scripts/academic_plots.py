@@ -419,26 +419,37 @@ def fig_learning(learning: pd.DataFrame) -> None:
 
 
 def table_learning(learning: pd.DataFrame) -> None:
-    """Solved counts and PAR-2 for each learning configuration, over the timed suite."""
+    """Solved counts, PAR-2, and search nodes for each learning configuration.
+
+    The node column is restricted to the instances *every* configuration solved. A timed-out run
+    reports no counters at all, so summing nodes over whatever each configuration happened to
+    finish would credit the weakest configuration for the instances it gave up on.
+    """
     if learning.empty:
         return
+    present = [s for s in LEARNING_ORDER if not learning[learning.solver == s].empty]
+    solved_by = [
+        set(learning[(learning.solver == s) & learning.status.isin(SOLVED)]["instance"])
+        for s in present
+    ]
+    common = set.intersection(*solved_by) if solved_by else set()
+
     lines = []
-    for solver in LEARNING_ORDER:
+    for solver in present:
         subset = learning[learning.solver == solver]
-        if subset.empty:
-            continue
         solved = int(subset.status.isin(SOLVED).sum())
         score = par2(subset["seconds"], subset["status"], TIMEOUT_LIMIT_S)
-        nodes = subset["nodes"].sum() if "nodes" in subset else float("nan")
+        nodes = subset[subset.instance.isin(common)]["nodes"].sum()
         lines.append(
             f"{LEARNING_LABELS.get(solver, solver)} & {solved}/{len(subset)} & "
             f"{score:.2f} & {nodes:,.0f} \\\\".replace(",", "\\,")
+            .replace("learning\\, no", "learning, no")
         )
     if not lines:
         return
     write_table("tab_learning", (
         "\\begin{tabular}{lrrr}\n\\toprule\n"
-        "configuration & solved & PAR-2 (s) & search nodes \\\\\n\\midrule\n"
+        "configuration & solved & PAR-2 (s) & nodes on common instances \\\\\n\\midrule\n"
         + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n"
     ))
 
