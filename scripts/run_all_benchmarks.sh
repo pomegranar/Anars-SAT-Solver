@@ -20,6 +20,10 @@ mkdir -p "$OUT"
 cd "$ROOT"
 [ -x target/release/dpbst ] || cargo build --release
 
+# The generated families (php, chain, blocks, grid, rand3) are not downloaded, they are
+# constructed; bench.py reads every suite from the same directory, so they are built into it.
+[ -d benchmarks/clean/php ] || python3 scripts/gen_instances.py benchmarks/clean
+
 JOBS="$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || getconf _NPROCESSORS_ONLN)"
 echo "using $JOBS performance cores for load-independent stages"
 
@@ -42,9 +46,19 @@ $BENCH --solvers dpbst-avl dpbst-unbalanced dpbst-splay dpbst-chain \
 
 echo
 echo "== 3. ablation: what does each technique buy? (parallel, counters only) =="
-$BENCH --solvers dpbst dpbst-nocache dpbst-plain-dpll dpbst-nopure dpbst-nopre \
+$BENCH --solvers dpbst dpbst-nolearn dpbst-nocache dpbst-nolearn-nocache dpbst-plain-dpll \
+       dpbst-nopure dpbst-nopre \
        --suites $MEMO_SUITES blocks grid --timeout 10 --mode metrics --jobs "$JOBS" \
        --out "$OUT/ablation.csv" --markdown "$OUT/ablation.md"
+
+echo
+echo "== 3b. clause learning, timed (sequential: learning trades nodes for work per node) =="
+# The only ablation whose point is invisible in the counters. Learning always cuts search nodes;
+# whether it cuts *time* depends on what the extra clauses cost to propagate, and that is a
+# wall-clock question.
+$BENCH --solvers dpbst dpbst-nolearn dpbst-learn-unbounded \
+       --suites $HARD_SUITES --timeout 10 --mode time --jobs 1 \
+       --out "$OUT/learning.csv" --markdown "$OUT/learning.md"
 
 echo
 echo "== 4. branching heuristics (parallel, counters only) =="

@@ -110,7 +110,8 @@ def load_csv(name: str) -> pd.DataFrame:
     numeric = [
         "seconds", "peak_kb", "nodes", "decisions", "conflicts", "propagations", "components",
         "cache_lookups", "cache_hits", "cache_hit_rate", "cache_entries", "table_max_bucket",
-        "table_max_depth", "table_mean_depth",
+        "table_max_depth", "table_mean_depth", "learned", "discarded", "learned_literals",
+        "backjumps",
     ]
     for column in numeric:
         if column in frame.columns:
@@ -339,10 +340,14 @@ def fig_ablation(ablation: pd.DataFrame) -> None:
     if rows.empty:
         return
     pivot = rows.pivot_table(index="suite", columns="solver", values="nodes", aggfunc="sum")
-    order = ["dpbst", "dpbst-nocache", "dpbst-nopure", "dpbst-nopre", "dpbst-plain-dpll"]
+    order = [
+        "dpbst", "dpbst-nolearn", "dpbst-nocache", "dpbst-nolearn-nocache",
+        "dpbst-nopure", "dpbst-nopre", "dpbst-plain-dpll",
+    ]
     pivot = pivot.reindex(columns=[c for c in order if c in pivot.columns])
     labels = {
-        "dpbst": "full", "dpbst-nocache": "no memo", "dpbst-nopure": "no pure literals",
+        "dpbst": "full", "dpbst-nolearn": "no learning", "dpbst-nocache": "no memo",
+        "dpbst-nolearn-nocache": "neither", "dpbst-nopure": "no pure literals",
         "dpbst-nopre": "no preprocessing", "dpbst-plain-dpll": "plain DPLL",
     }
 
@@ -354,13 +359,88 @@ def fig_ablation(ablation: pd.DataFrame) -> None:
     for i, column in enumerate(pivot.columns):
         offsets = positions - 0.4 + width * (i + 0.5)
         colour = COLOUR["dpbst"] if column == "dpbst" else greys[i]
-        ax.bar(offsets, pivot[column].fillna(0), width, label=labels[column], color=colour)
+        ax.bar(offsets, pivot[column].fillna(0), width,
+               label=labels.get(column, column), color=colour)
     ax.set_yscale("log")
     ax.set_xticks(positions)
     ax.set_xticklabels([escape(s) for s in pivot.index], rotation=28, ha="right")
     ax.set_ylabel("search nodes, summed over instances (log scale)")
     ax.legend(ncol=3, loc="upper left", fontsize=6.8)
     save(fig, "fig_ablation")
+
+
+# -------------------------------------------------------------------------------------------
+# Figure 8: clause learning
+# -------------------------------------------------------------------------------------------
+
+LEARNING_LABELS = {
+    "dpbst": "learning on (default)",
+    "dpbst-nolearn": "learning off",
+    "dpbst-learn-unbounded": "learning, no size limit",
+}
+LEARNING_ORDER = ["dpbst", "dpbst-nolearn", "dpbst-learn-unbounded"]
+
+
+def fig_learning(learning: pd.DataFrame) -> None:
+    """PAR-2 per family with learning on, off, and unbounded.
+
+    Search nodes would be the wrong measure here: learning removes nodes on essentially every
+    instance, and the interesting question is whether it removes time. Under counter-based
+    propagation a clause that is kept is charged on every assignment to every variable it
+    mentions, so the two can move in opposite directions.
+    """
+    if learning.empty:
+        return
+    rows = learning.copy()
+    rows["par2"] = np.where(
+        rows.status.isin(SOLVED), rows["seconds"], 2.0 * TIMEOUT_LIMIT_S
+    )
+    pivot = rows.pivot_table(index="suite", columns="solver", values="par2", aggfunc="sum")
+    pivot = pivot.reindex(columns=[c for c in LEARNING_ORDER if c in pivot.columns])
+    if pivot.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(7.0, 3.2))
+    n = len(pivot.columns)
+    width = 0.8 / max(n, 1)
+    positions = np.arange(len(pivot.index))
+    greys = plt.cm.Greys(np.linspace(0.4, 0.8, max(n, 2)))
+    for i, column in enumerate(pivot.columns):
+        offsets = positions - 0.4 + width * (i + 0.5)
+        colour = COLOUR["dpbst"] if column == "dpbst" else greys[i]
+        ax.bar(offsets, pivot[column].fillna(0), width,
+               label=LEARNING_LABELS.get(column, column), color=colour)
+    ax.set_yscale("log")
+    ax.set_xticks(positions)
+    ax.set_xticklabels([escape(s) for s in pivot.index], rotation=28, ha="right")
+    ax.set_ylabel("PAR-2 seconds, summed over instances (log scale)")
+    ax.legend(ncol=3, loc="upper left", fontsize=6.8)
+    save(fig, "fig_learning")
+
+
+def table_learning(learning: pd.DataFrame) -> None:
+    """Solved counts and PAR-2 for each learning configuration, over the timed suite."""
+    if learning.empty:
+        return
+    lines = []
+    for solver in LEARNING_ORDER:
+        subset = learning[learning.solver == solver]
+        if subset.empty:
+            continue
+        solved = int(subset.status.isin(SOLVED).sum())
+        score = par2(subset["seconds"], subset["status"], TIMEOUT_LIMIT_S)
+        nodes = subset["nodes"].sum() if "nodes" in subset else float("nan")
+        lines.append(
+            f"{LEARNING_LABELS.get(solver, solver)} & {solved}/{len(subset)} & "
+            f"{score:.2f} & {nodes:,.0f} \\\\".replace(",", "\\,")
+        )
+    if not lines:
+        return
+    write_table("tab_learning", (
+        "\\begin{tabular}{lrrr}\n\\toprule\n"
+        "configuration & solved & PAR-2 (s) & search nodes \\\\\n\\midrule\n"
+        + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n"
+    ))
 
 
 # -------------------------------------------------------------------------------------------
@@ -472,6 +552,7 @@ def main() -> int:
     timed = load_csv("hard.csv")
     buckets = load_csv("buckets.csv")
     ablation = load_csv("ablation.csv")
+    learning = load_csv("learning.csv")
 
     print("figures")
     fig_cactus(timed)
@@ -481,11 +562,13 @@ def main() -> int:
     fig_hitrate(pd.concat([buckets], ignore_index=True))
     fig_bucket_depth(buckets)
     fig_ablation(ablation)
+    fig_learning(learning)
 
     print("tables")
     table_par2(timed)
     table_families(timed)
     table_bucket_summary(buckets)
+    table_learning(learning)
     table_versions()
 
     print("done")

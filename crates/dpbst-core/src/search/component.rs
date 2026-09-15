@@ -251,6 +251,7 @@ impl ComponentAnalyzer {
         store: &mut ComponentStore,
         detect_pure: bool,
     ) -> Range<usize> {
+        self.ensure_clauses(state.num_clauses());
         self.bump_stamp();
         self.pure.clear();
         let first = store.entries.len();
@@ -272,7 +273,7 @@ impl ComponentAnalyzer {
                 self.scratch_vars.push(v);
                 let var = Var::from_index(v as usize);
                 for lit in [var.positive(), var.negative()] {
-                    for &c in state.occurrences(lit) {
+                    for c in state.occurrences(lit) {
                         let c = c as usize;
                         if !state.is_active(c) || self.clause_stamp[c] == self.stamp {
                             continue;
@@ -336,6 +337,7 @@ impl ComponentAnalyzer {
         store: &mut ComponentStore,
         detect_pure: bool,
     ) -> Range<usize> {
+        self.ensure_clauses(state.num_clauses());
         self.bump_stamp();
         self.pure.clear();
         let first = store.entries.len();
@@ -349,7 +351,7 @@ impl ComponentAnalyzer {
             let var = Var::from_index(v as usize);
             let mut occurs = false;
             for lit in [var.positive(), var.negative()] {
-                for &c in state.occurrences(lit) {
+                for c in state.occurrences(lit) {
                     let c = c as usize;
                     if !state.is_active(c) {
                         continue;
@@ -396,6 +398,16 @@ impl ComponentAnalyzer {
 
         store.push(&self.scratch_vars, &self.scratch_clauses);
         first..store.entries.len()
+    }
+
+    /// Grows the clause marks to cover a database that has learned new clauses.
+    ///
+    /// Learned clauses take part in decomposition like any other, so they need stamps too, and
+    /// the database only ever grows.
+    pub fn ensure_clauses(&mut self, num_clauses: usize) {
+        if self.clause_stamp.len() < num_clauses {
+            self.clause_stamp.resize(num_clauses, 0);
+        }
     }
 
     /// Advances the visited stamp, clearing the marks wholesale on wrap-around.

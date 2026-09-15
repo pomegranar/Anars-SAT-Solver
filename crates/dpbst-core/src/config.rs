@@ -4,6 +4,17 @@ use crate::cache::{BucketKind, DEFAULT_BUDGET_BYTES, DEFAULT_TARGET_LOAD};
 use crate::search::heuristic::Heuristic;
 use std::time::Duration;
 
+/// Default longest derived clause to keep.
+///
+/// Three. That is far shorter than a CDCL solver would tolerate, and it is a consequence of
+/// propagating by clause counters rather than watched literals: a stored clause is charged on
+/// every assignment to every variable it mentions. Swept over the benchmark suite under PAR-2,
+/// the limit is the difference between learning paying for itself and not; see the README.
+pub const DEFAULT_MAX_LEARNED_CLAUSE_SIZE: usize = 3;
+
+/// Default ceiling on derived clause literals: eight million, or about 32 MiB of them.
+pub const DEFAULT_MAX_LEARNED_LITERALS: usize = 8 << 20;
+
 /// Which algorithm to run.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum Algorithm {
@@ -52,6 +63,9 @@ impl std::fmt::Display for Algorithm {
 
 /// How to run a solve.
 #[derive(Clone, Debug)]
+// Every technique the solver has is switchable, because every one of them is ablated in the
+// benchmark tables. A row of independent booleans is what that actually is.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Config {
     /// Which algorithm to run.
     pub algorithm: Algorithm,
@@ -65,6 +79,23 @@ pub struct Config {
     pub cache_budget_bytes: usize,
     /// Entries per bucket the memo aims for before growing.
     pub target_load: usize,
+    /// Whether to derive a clause from every conflict and backjump on it.
+    pub learn: bool,
+    /// Longest derived clause worth keeping; longer ones are discarded and the search
+    /// backtracks chronologically instead.
+    ///
+    /// Propagation here is by clause counters, not watched literals, so a stored clause costs
+    /// work on every assignment to every variable it mentions. Long clauses are the worst of
+    /// that trade — most cost, least pruning — and dropping them is what keeps learning a win on
+    /// large instances. Zero means no limit.
+    pub max_learned_clause_size: usize,
+    /// Cap on the total literals held in derived clauses, after which learning stops.
+    ///
+    /// Learned clauses are never deleted — component keys name clauses by index, so recycling an
+    /// index would change what an existing memo entry means — which is why the database needs a
+    /// ceiling rather than a reduction policy. The default is generous enough that only a very
+    /// long run on a very hard instance reaches it.
+    pub max_learned_literals: usize,
     /// Whether to apply pure literal elimination inside components.
     pub pure_literals: bool,
     /// Whether to run the preprocessor.
@@ -86,6 +117,9 @@ impl Default for Config {
             cache: true,
             cache_budget_bytes: DEFAULT_BUDGET_BYTES,
             target_load: DEFAULT_TARGET_LOAD,
+            learn: true,
+            max_learned_clause_size: DEFAULT_MAX_LEARNED_CLAUSE_SIZE,
+            max_learned_literals: DEFAULT_MAX_LEARNED_LITERALS,
             pure_literals: true,
             preprocess: true,
             dp_clause_limit: 200_000,
@@ -96,7 +130,8 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Configuration for plain DPLL, with every extra switched off.
+    /// Configuration for plain DPLL, with every extra switched off — no decomposition, no memo,
+    /// no learning, no preprocessing.
     ///
     /// This is the control the memo is measured against, so it is a named constructor rather
     /// than something a benchmark script has to assemble correctly by hand.
@@ -105,6 +140,7 @@ impl Config {
         Self {
             algorithm: Algorithm::Dpll,
             cache: false,
+            learn: false,
             preprocess: false,
             ..Self::default()
         }

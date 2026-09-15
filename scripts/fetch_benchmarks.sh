@@ -30,7 +30,15 @@ declare -a ARCHIVES=(
   "ais:AIS/ais"
   "blocksworld:PLANNING/BlocksWorld/blocksworld"
   "logistics:PLANNING/Logistics/logistics"
+  "uf250-1065:RND3SAT/uf250-1065"
+  "uuf250-1065:RND3SAT/uuf250-1065"
   "aim:DIMACS/AIM/aim"
+  "jnh:DIMACS/JNH/jnh"
+  "dubois:DIMACS/DUBOIS/dubois"
+  "ssa:DIMACS/SSA/ssa"
+  "bf:DIMACS/BF/bf"
+  "parity:DIMACS/PARITY/parity"
+  "QG:QG/QG"
   "CBS_k3_n100_m403_b10:CBS/CBS_k3_n100_m403_b10"
 )
 

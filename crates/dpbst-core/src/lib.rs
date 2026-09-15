@@ -8,12 +8,16 @@
 //!
 //! # How
 //!
-//! Ordinary DPLL backtracking search, plus two things:
+//! Ordinary DPLL backtracking search, plus three things:
 //!
 //! * **Decomposition.** After some variables are assigned, the clauses that remain often fall
 //!   into groups sharing no variables. Those groups are solved independently.
 //! * **Memoisation.** Each group is named canonically and its verdict remembered, so a subproblem
 //!   reached twice by different routes is solved once. That memo is the hash-table-of-BSTs.
+//! * **Clause learning.** Every conflict is analysed back to the decisions responsible for it and
+//!   recorded as a new clause, so the same dead end is recognised rather than re-entered, and the
+//!   search jumps straight back to where that clause bites. It interacts awkwardly with the memo,
+//!   and [`search`] explains how the two are reconciled.
 //!
 //! ```
 //! use dpbst_core::{Cnf, config::Config, solver::{solve, Outcome}};

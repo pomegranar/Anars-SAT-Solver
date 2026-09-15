@@ -80,7 +80,12 @@ SOLVERS: dict[str, list[str]] = {
     "dpbst-splay": dpbst_variant("--bucket", "splay"),
     "dpbst-chain": dpbst_variant("--bucket", "chain"),
     "dpbst-nocache": dpbst_variant("--no-cache"),
-    "dpbst-plain-dpll": dpbst_variant("--algorithm", "dpll", "--no-cache", "--no-preprocess"),
+    "dpbst-nolearn": dpbst_variant("--no-learn"),
+    "dpbst-nolearn-nocache": dpbst_variant("--no-learn", "--no-cache"),
+    "dpbst-learn-unbounded": dpbst_variant("--max-learned-clause-size", "0"),
+    "dpbst-plain-dpll": dpbst_variant(
+        "--algorithm", "dpll", "--no-cache", "--no-learn", "--no-preprocess"
+    ),
     "dpbst-davis-putnam": dpbst_variant("--algorithm", "dp"),
     "dpbst-nopure": dpbst_variant("--no-pure-literals"),
     "dpbst-nopre": dpbst_variant("--no-preprocess"),
@@ -108,6 +113,10 @@ METRIC_FIELDS = (
     "conflicts",
     "propagations",
     "components",
+    "learned",
+    "discarded",
+    "learned_literals",
+    "backjumps",
     "cache_lookups",
     "cache_hits",
     "cache_hit_rate",
@@ -319,10 +328,10 @@ def summarize_metrics(results: list[Result], solvers: list[str]) -> str:
     for suite in suites:
         lines.append(f"\n### {suite}\n")
         lines.append(
-            "| config | solved | search nodes | components | memo hits | hit rate | "
-            "entries | max bucket | mean depth |"
+            "| config | solved | search nodes | components | learned | backjumps | "
+            "memo hits | hit rate | entries | max bucket | mean depth |"
         )
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for solver in solvers:
             subset = [
                 r for r in results
@@ -346,7 +355,8 @@ def summarize_metrics(results: list[Result], solvers: list[str]) -> str:
             buckets = [int(r.metrics.get("table_max_bucket", 0) or 0) for r in subset]
             lines.append(
                 f"| `{solver}` | {len(solved)}/{len(subset)} | {total('nodes'):.0f} | "
-                f"{total('components'):.0f} | {hits:.0f} | {rate * 100:.1f}% | "
+                f"{total('components'):.0f} | {total('learned'):.0f} | "
+                f"{total('backjumps'):.0f} | {hits:.0f} | {rate * 100:.1f}% | "
                 f"{total('cache_entries'):.0f} | {max(buckets, default=0)} | "
                 f"{statistics.mean(depths) if depths else 0.0:.2f} |"
             )

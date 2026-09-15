@@ -55,7 +55,7 @@ every SAT solver is: a large, carefully-built pile of ways to avoid work.
 
 ### The idea in this solver
 
-Two of those ways, and one data structure to support them.
+Three of those ways, and one data structure to support them.
 
 **1. Notice when a problem falls apart into smaller ones.**
 
@@ -73,7 +73,17 @@ what it has already worked out and looks it up next time.
 Remembering solved sub-problems and combining them is exactly what computer scientists call
 **dynamic programming**, and it is the DP in the name.
 
-**3. Store those memories in a hash table of binary search trees.**
+**3. Learn from every dead end.**
+
+When a set of decisions turns out to be contradictory, the solver traces the contradiction back
+to the decisions that caused it and writes down a new rule forbidding that combination. The rule
+follows from the ones already there, so it changes no answers — but from then on the same dead
+end is spotted straight away, wherever the search approaches it from, instead of being walked
+into again. This is **clause learning**, the idea behind every competitive solver of the last
+thirty years, and it does not sit comfortably next to point 2; §4.8 explains why, and what the
+combination costs.
+
+**4. Store those memories in a hash table of binary search trees.**
 
 The notebook needs to be fast — millions of entries, looked up constantly — so its design is the
 whole point of the project.
@@ -122,6 +132,7 @@ $ dpbst instance.cnf --stats            # report what the solve cost
 $ dpbst instance.cnf -t 60              # give up after 60 seconds
 $ dpbst instance.cnf --bucket chain     # use list buckets instead of trees
 $ dpbst instance.cnf --no-cache         # turn the memo off
+$ dpbst instance.cnf --no-learn         # turn clause learning off
 $ dpbst instance.cnf -a dp              # run Davis and Putnam's 1960 procedure instead
 $ cat instance.cnf | dpbst              # reads standard input too
 ```
@@ -134,16 +145,44 @@ s UNSATISFIABLE
 c algorithm            : dpll-memo
 c bucket policy        : avl
 c input                : 90 vars, 415 clauses
-c search nodes         : 128401
-c decisions            : 256802
-c conflicts            : 94577
-c components           : 128401
-c memo                 : 128401 lookups, 63496 hits (49.5%), 64905 entries
-c memo table           : 32768 buckets, 28843 occupied, max bucket 8, mean depth 2.29
-c cpu time             : 0.4127 s
+c preprocessing        : 415 -> 405 clauses (0 dup, 10 unit, 0 pure, 10 eliminated)
+c search nodes         : 8315
+c decisions            : 8722
+c conflicts            : 408
+c propagations         : 44005
+c components           : 8315
+c pure literals        : 8764
+c learned clauses      : 0 kept, 408 too long (0 literals, 0.0 mean)
+c backjumps            : 0 (0 decision levels skipped)
+c max depth            : 36
+c memo                 : 8315 lookups, 3954 hits (47.6%), 4361 entries
+c memo maintenance     : 4361 inserts, 0 evicted, 0 sweeps, 1 resizes
+c memo table           : 2048 buckets, 1819 occupied, max bucket 8, max depth 4, mean depth 1.71
+c memo memory          : 0.91 MiB
+c cpu time             : 0.0257 s
 ```
 
-Half the sub-problems on that instance were answered from memory rather than searched.
+Nearly half the sub-problems on that instance were answered from memory rather than searched —
+and note the second line of the learning report. Pigeonhole is the textbook family for which
+*every* resolution proof is exponential, so almost nothing short is derivable from a conflict and
+almost every derived clause is thrown away for length. The memo carries that instance on its own.
+
+Where learning does bite, it is not a marginal effect:
+
+```console
+$ dpbst benchmarks/clean/aim/aim-200-2_0-no-1.cnf --no-model --stats
+s UNSATISFIABLE
+c search nodes         : 82
+c conflicts            : 26
+c learned clauses      : 23 kept, 3 too long (58 literals, 2.5 mean)
+c backjumps            : 13 (59 decision levels skipped)
+c memo                 : 82 lookups, 0 hits (0.0%), 0 entries
+c cpu time             : 0.0020 s
+```
+
+The same instance with `--no-learn` was still running after five minutes. Twenty-three clauses,
+averaging two and a half literals each, are the whole difference. The memo contributes nothing
+here: nothing decomposes.
 
 ### Input format
 
@@ -171,7 +210,9 @@ benefit of the other solvers.
 
 The backbone is **DPLL** (Davis–Putnam–Logemann–Loveland, 1962), which every practical solver
 still descends from. Pick an unassigned variable, try it true, simplify, recurse; if that fails,
-try it false; if both fail, the sub-problem has no solution.
+try it false; if both fail, the sub-problem has no solution. What happens on the way out of a
+failure is §4.8: the solver derives a rule explaining it, and jumps back to wherever that rule
+first bites rather than undoing one decision at a time.
 
 Two rules do most of the work before any guessing happens:
 
@@ -316,10 +357,82 @@ Five rules are selectable with `--heuristic`:
 | `mom` | Maximum Occurrences in clauses of Minimum Size |
 | `static` | lowest index first — no heuristic at all, for reproducible measurement |
 
-**VSIDS is deliberately absent.** It scores variables by how often they appear in *learned*
-clauses, and this solver learns none. The right target for a caching solver is VSADS (Sang,
+**VSIDS is still absent.** It scores variables by how often they appear in *recently learned*
+clauses. Learned clauses now exist here (§4.8), so the obstacle is no longer a missing
+prerequisite — it is simply not implemented, and every heuristic above scores the component in
+front of it rather than the run so far. The right target for a caching solver is VSADS (Sang,
 Beame and Kautz), which blends VSIDS with occurrence counting; see
 [limitations](#part-6--limitations-and-what-would-come-next).
+
+### 4.8 Clause learning
+
+When a branch fails, DPLL remembers nothing: it undoes the assignment, tries the other value, and
+if a hundred different routes lead into the same dead end it walks into that dead end a hundred
+times. **Clause learning** is the fix, and it is the single most valuable idea in modern SAT
+solving.
+
+Every forced assignment has a reason — the rule that left it no choice. Following those reasons
+back from a contradiction gives the set of earlier decisions actually responsible for it, and
+that set can be written down as a new rule: *not all of these at once*. The new rule is a logical
+consequence of the ones already present, so adding it changes no answers; what it changes is that
+the same dead end is now noticed immediately, by ordinary propagation, wherever it is approached
+from.
+
+`dpbst` derives one such clause per conflict, by the standard **first-UIP** cut, and then
+**backjumps**: rather than undoing one decision, it returns directly to the shallowest level at
+which the new clause forces something, skipping every level in between. The search is recursive —
+one call per component — so a backjump travels back up the call stack until it reaches the frame
+that owns the target level; see `search/mod.rs`.
+
+#### Why this is awkward in a decomposing solver, and what it costs
+
+A learned clause mentions whatever variables the conflict touched, which need not respect the
+component boundaries the memo depends on. That leaves two choices, and only one of them is sound.
+
+Hiding learned clauses from decomposition does not work. Components are independent only because
+no active clause joins them; a hidden clause could be falsified by assigning a variable of one
+component and force a variable of another, and then a component's verdict is no longer a fact
+about that component alone. Cached under a key that does not mention the clause, that verdict
+would later be reused somewhere it does not hold.
+
+So learned clauses are ordinary clauses here: they appear in the occurrence lists, they take part
+in decomposition, and their indices appear in component keys. The key still determines the
+residual formula exactly, so every cached verdict stays true for as long as its entry lives — and
+the price is paid in hit rate instead, because a component reached before a clause was learned
+and after it has two different names. `results/ablation.md` reports the hit rate with learning on
+and off.
+
+Two consequences follow:
+
+* **Learned clauses are never deleted.** A key names clauses by index, so recycling an index
+  would silently change what an existing entry means. The database is capped by
+  `--max-learned-literals` instead, after which the solver stops learning.
+* **Long clauses are discarded rather than kept.** Propagation here is by clause counters, not
+  watched literals (§4.5), so a stored clause costs work on *every* assignment to *every*
+  variable it mentions, where a watched-literal solver would ignore it until one of two literals
+  is touched. Long clauses are the worst end of that trade — most cost, least pruning — so a
+  clause longer than `--max-learned-clause-size` is used for nothing and thrown away, and the
+  search backtracks chronologically for that conflict.
+
+The default limit is **three**, which is far shorter than any CDCL solver would tolerate and is
+entirely a consequence of the propagation scheme. It was swept, not guessed — PAR-2 seconds over
+71 instances from the families where the choice makes any difference, at a 20 second limit:
+
+| limit | off | 1 | 2 | **3** | 4 |
+|---|---:|---:|---:|---:|---:|
+| solved | 71 | 71 | 71 | **71** | 70 |
+| PAR-2 s | 138.3 | 140.9 | 128.1 | **106.1** | 141.2 |
+
+Keeping everything is worse than learning nothing at all on random 3-SAT, which is the clearest
+possible statement of what counter-based propagation costs. `results/learning.md` is the timed
+comparison over the full suite.
+
+One detail is specific to this solver. Pure literal elimination assigns variables with *no*
+reason: purity preserves satisfiability, but it is not an implication, so there is nothing to
+resolve against. Resolution therefore stops at a pure literal exactly as it stops at a decision,
+and keeps the literal. The derived clause is still a valid resolvent; it simply need not be
+asserting, and when it is not, no backjump is justified and the search backtracks one level as
+before.
 
 ---
 
@@ -387,10 +500,11 @@ Five layers, deliberately:
 1. **Unit tests** next to each module — the arena free list, AVL height bounds, varint edges,
    DIMACS malformed input, counter restoration after backtracking.
 2. **Differential tests against brute force** (`tests/differential.rs`). Around 1,100 random
-   formulas small enough to settle by enumerating all `2^n` assignments, each run through **15
-   configurations** — every bucket policy, every heuristic, memo on and off, pure literals on and
-   off, preprocessing on and off, plain DPLL, Davis–Putnam, and a cache budget small enough to
-   force eviction mid-search. Every configuration must match ground truth, and every satisfiable
+   formulas small enough to settle by enumerating all `2^n` assignments, each run through **23
+   configurations** — every bucket policy, every heuristic, memo on and off, learning on and off,
+   learning without the memo, learning without pure literals, a learned-clause budget small
+   enough to run out mid-solve, pure literals on and off, preprocessing on and off, plain DPLL,
+   Davis–Putnam, and a cache budget small enough to force eviction mid-search. Every configuration must match ground truth, and every satisfiable
    answer must produce a model that satisfies the *original* formula.
    *This is the test that matters.* Configurations agreeing with each other proves nothing if
    they are all wrong the same way.
@@ -406,8 +520,7 @@ Five layers, deliberately:
 ```console
 $ scripts/fetch_tools.sh                    # build CaDiCaL, Kissat, MiniSat, varisat, splr
 $ scripts/fetch_benchmarks.sh               # ~8,400 SATLIB instances (~40 MB)
-$ python3 scripts/gen_instances.py benchmarks/generated
-$ cp -R benchmarks/generated/* benchmarks/clean/
+$ python3 scripts/gen_instances.py benchmarks/clean   # the constructed families
 
 $ python3 scripts/bench.py --suites uf250-1065:25 php chain --timeout 20
 $ cargo bench                               # criterion microbenchmarks
@@ -452,26 +565,30 @@ docs/DESIGN.md              the design document, written before the code
 
 Stated plainly, because a benchmark table without them is marketing.
 
-**No clause learning.** This is the big one. Every solver that beats `dpbst` does CDCL: on a
-conflict it derives a new clause explaining the failure and adds it to the formula, so the same
-dead end is never re-entered. It is the single most valuable idea in modern SAT solving and this
-project does not implement it.
+**Clause learning is here, but it is not CDCL.** §4.8 describes what `dpbst` does: first-UIP
+conflict analysis, backjumping, learned clauses participating fully in decomposition and in the
+memo key. What it does not have is the rest of the CDCL machine that makes Kissat fast — no
+activity-based clause deletion, no restarts, no phase saving, no VSIDS. Learned clauses here are
+kept until a literal budget runs out and then not learned at all, because a component key names
+clauses by index and deleting one would change what existing entries mean. A reduction policy
+that retires clauses *and* the memo entries naming them is the obvious next piece of work.
 
-It is also not a free addition here. A learned clause spanning two components *merges* them,
-destroying the decomposition the memo depends on. Solvers that do both — `Cachet`, `sharpSAT` —
-handle the interaction carefully. Doing it properly is the obvious next piece of work, not a
-line to add.
+**Learning and the memo get in each other's way.** They are both sound together — that is what
+§4.8 is careful about — but a learned clause changes what a component is called, so the same
+subproblem reached before and after learning gets two names and is solved twice. [Part
+3](#part-3--results) reports the hit rate with learning on and off. `Cachet` and `sharpSAT` face
+the same tension and handle it with more care than this does.
 
 **No watched literals.** Explained in §4.5: component analysis needs to know which clauses are
 satisfied, and watched literals cannot say. The cost is a constant factor on every assignment.
 
 **No proof output.** CaDiCaL and Kissat emit DRAT proofs, so an independent checker can verify an
-`UNSATISFIABLE` answer. Without clause learning there is no natural resolution proof to emit.
-Unsatisfiable answers here are instead cross-checked against other solvers and, for small
-instances, against exhaustive enumeration.
+`UNSATISFIABLE` answer. Every clause `dpbst` derives is a resolvent, so a DRAT trace is now a
+natural thing to emit and was not before — but it is not emitted, and the clauses discarded for
+being over-long would leave gaps a checker could not bridge. Unsatisfiable answers are still
+cross-checked against other solvers and, for small instances, against exhaustive enumeration.
 
-**No VSIDS.** It needs conflict analysis, which needs clause learning. VSADS is the right target
-once that exists.
+**No VSIDS.** The prerequisite now exists; the heuristic does not. VSADS is the right target.
 
 **Single threaded.**
 

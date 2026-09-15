@@ -72,7 +72,8 @@ def load(name: str) -> pd.DataFrame | None:
         return None
     for column in ("seconds", "nodes", "components", "cache_lookups", "cache_hits",
                    "cache_entries", "table_max_bucket", "table_max_depth", "table_mean_depth",
-                   "propagations", "conflicts", "decisions", "peak_kb"):
+                   "propagations", "conflicts", "decisions", "peak_kb",
+                   "learned", "discarded", "learned_literals", "backjumps"):
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
     return frame
@@ -239,6 +240,74 @@ def ablation_nodes(ablation: pd.DataFrame, out: pathlib.Path) -> str | None:
     return save(fig, out, "ablation")
 
 
+def learning_scatter(learning: pd.DataFrame, out: pathlib.Path) -> str | None:
+    """Per-instance time with clause learning against without, log-log.
+
+    Learning always removes search nodes. Whether it removes *time* is a different question here,
+    because propagation is by clause counters rather than watched literals, so every clause kept
+    costs work on every assignment to every variable it mentions. This plot is that question.
+    """
+    a = learning[learning.solver == "dpbst"].set_index("instance")
+    b = learning[learning.solver == "dpbst-nolearn"].set_index("instance")
+    common = a.index.intersection(b.index)
+    if len(common) < 3:
+        return None
+
+    cap = max(learning["seconds"].max(), 1e-3)
+    floor = 1e-4
+
+    def axis(frame: pd.DataFrame) -> list[float]:
+        return [
+            max(floor, cap if frame.loc[i, "status"] not in SOLVED else frame.loc[i, "seconds"])
+            for i in common
+        ]
+
+    xs, ys = axis(b), axis(a)
+    fig, ax = plt.subplots(figsize=(5.4, 5.0))
+    ax.scatter(xs, ys, s=14, alpha=0.75, color=PALETTE[0], edgecolors="none")
+    line = [floor, cap]
+    ax.plot(line, line, "--", color="0.4", linewidth=1)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("seconds without learning (log)")
+    ax.set_ylabel("seconds with learning (log)")
+    ax.set_title("Clause learning, per instance")
+    ax.grid(True, which="both", axis="both", alpha=0.3)
+    return save(fig, out, "learning-scatter")
+
+
+def learning_par2(learning: pd.DataFrame, out: pathlib.Path, timeout: float = 10.0) -> str | None:
+    """PAR-2 per family for each learning configuration.
+
+    PAR-2 charges an unsolved instance twice the timeout, so a configuration cannot buy a lower
+    mean by giving up. Lower is better.
+    """
+    rows = learning.copy()
+    rows["par2"] = [
+        r.seconds if r.status in SOLVED else 2 * timeout for r in rows.itertuples()
+    ]
+    pivot = rows.pivot_table(index="suite", columns="solver", values="par2", aggfunc="sum")
+    pivot = pivot.dropna(axis=1, how="all")
+    if pivot.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(7.2, 3.8))
+    n = len(pivot.columns)
+    width = 0.8 / max(n, 1)
+    for i, column in enumerate(pivot.columns):
+        offsets = [x - 0.4 + width * (i + 0.5) for x in range(len(pivot.index))]
+        ax.bar(offsets, pivot[column].fillna(0), width,
+               label=escape(column.replace("dpbst-", "").replace("dpbst", "learning on")),
+               color=PALETTE[i % len(PALETTE)])
+    ax.set_yscale("log")
+    ax.set_xticks(range(len(pivot.index)))
+    ax.set_xticklabels([escape(s) for s in pivot.index], rotation=20, ha="right")
+    ax.set_ylabel("PAR-2 seconds, summed (log)")
+    ax.set_title("Clause learning by family")
+    ax.legend(ncol=3)
+    return save(fig, out, "learning-par2")
+
+
 def heuristic_nodes(heuristics: pd.DataFrame, out: pathlib.Path) -> str | None:
     rows = heuristics[heuristics["nodes"].notna()]
     if rows.empty:
@@ -336,6 +405,7 @@ def main() -> int:
     timed = load(TIMED_CSV)
     buckets = load("buckets.csv")
     ablation = load("ablation.csv")
+    learning = load("learning.csv")
     heuristics = load("heuristics.csv")
 
     if timed is None:
@@ -372,6 +442,22 @@ def main() -> int:
         sections.append(r"\section{Bucket policy}")
         figure(bucket_depth(buckets, build),
                "Mean depth is the expected number of comparisons for a successful lookup.")
+
+    if learning is not None:
+        sections.append(r"\section{Clause learning}")
+        sections.append(
+            "Learning derives a clause from every conflict and jumps back to where that clause "
+            "first forces something. It always removes search nodes. Whether it removes time is "
+            "the question these two figures ask, because this solver propagates by clause "
+            "counters rather than watched literals, so a clause that is kept costs work on every "
+            "assignment to every variable it mentions. \\texttt{learn-unbounded} keeps every "
+            "derived clause; the default discards the long ones.")
+        figure(learning_par2(learning, build),
+               "Lower is better. An unsolved instance is charged twice the timeout, so giving up "
+               "cannot flatter a configuration.")
+        figure(learning_scatter(learning, build),
+               "Points below the dashed line are instances learning wins. Timeouts are pinned to "
+               "the right and top edges.")
 
     if ablation is not None:
         sections.append(r"\section{Ablation}")

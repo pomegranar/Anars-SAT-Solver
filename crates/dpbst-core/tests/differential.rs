@@ -99,6 +99,44 @@ fn configurations() -> Vec<(String, Config, bool)> {
         false,
     ));
     out.push((
+        "no-learn".into(),
+        Config {
+            learn: false,
+            ..Config::default()
+        },
+        false,
+    ));
+    out.push((
+        "learn-without-the-memo".into(),
+        // Learning and the memo constrain each other: a learned clause changes what a component
+        // is, and the memo keys on that. Running learning alone isolates it.
+        Config {
+            cache: false,
+            ..Config::default()
+        },
+        false,
+    ));
+    out.push((
+        "learn-without-pure-literals".into(),
+        // Pure literals are the one assignment with no reason clause, so resolution has to stop
+        // at them. Removing them takes that path out, which is worth testing both ways.
+        Config {
+            pure_literals: false,
+            ..Config::default()
+        },
+        false,
+    ));
+    out.push((
+        "learning-capped".into(),
+        // A ceiling low enough that the search runs out of room mid-solve and has to carry on
+        // without learning; the verdict must not change.
+        Config {
+            max_learned_literals: 8,
+            ..Config::default()
+        },
+        false,
+    ));
+    out.push((
         "no-pure-literals".into(),
         Config {
             pure_literals: false,
@@ -118,6 +156,7 @@ fn configurations() -> Vec<(String, Config, bool)> {
         "bare".into(),
         Config {
             cache: false,
+            learn: false,
             pure_literals: false,
             preprocess: false,
             ..Config::default()

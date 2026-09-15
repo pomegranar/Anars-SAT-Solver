@@ -14,6 +14,9 @@ A SAT solver, `dpbst`, that combines three ideas:
    remembered. Distinct search paths that arrive at the same subproblem pay for it once.
 3. **A hash table whose buckets are binary search trees** — the store behind that memo.
 
+Clause learning was originally ruled out (see §5, kept as written) and was added afterwards;
+§9 records what changed and why.
+
 Point 3 is the project's premise: replace the usual "hash table + linked-list chaining"
 with "hash table + BST per bucket", and measure whether it actually pays.
 
@@ -186,14 +189,25 @@ Component analysis already scans every active clause, so literal statistics are 
 No VSIDS: VSIDS is driven by conflict analysis, and we do not learn clauses. Noted as
 future work (VSADS, Sang et al., is the right target for a caching solver).
 
+> **Revised, §9.** Conflict analysis now exists, so the prerequisite is met. VSADS is still
+> future work; the heuristics remain component-local.
+
 ## 5. What we are *not* doing, and why
 
 * **No clause learning (CDCL).** It is the single biggest reason kissat will beat us, and we
   say so up front. Learned clauses also interact badly with component caching — a learned
   clause spanning two components merges them, destroying the decomposition. Real caching
   solvers handle this; we do not.
+
+  > **Revised, §9.** This decision was reversed. The stated objection was right about the
+  > mechanism and wrong about the conclusion: a learned clause does merge components, and the
+  > answer is to let it, rather than to do without learning.
+
 * **No DRAT proof output.** Without clause learning there is no natural resolution proof to
   emit. UNSAT answers are instead cross-validated against CaDiCaL/Kissat in the test harness.
+
+  > **Revised, §9.** A resolution proof is now available in principle. It is still not emitted,
+  > and over-long derived clauses are discarded, which would leave gaps in one.
 * **No unsafe code.** `splr` gates bounds-check elision behind an `unsafe_access` feature; we
   keep `#![forbid(unsafe_code)]` and eat the bounds checks. Measured, then reported.
 
@@ -249,3 +263,69 @@ MiniSat 2.2.1, varisat 0.2.1, splr.
 decompose (the constraint graph is an expander), so the cache will be pure overhead there
 and we will lose badly to every CDCL solver. The interesting question is whether the
 structured families (flat/planning) decompose enough for the memo to earn its keep.
+
+---
+
+## 9. Clause learning (added after the fact)
+
+§5 ruled clause learning out. That was wrong, and this section records what replaced it rather
+than quietly editing the original away.
+
+### What the original objection got right
+
+A learned clause mentions whatever variables the conflict touched. Those variables need not lie
+in one component, so the clause does merge components — exactly as §5 says.
+
+### Why that is not a reason to do without it
+
+The merge is a cost, not a contradiction. What §5 missed is that the alternative is unsound.
+Suppose learned clauses were kept out of decomposition so as not to disturb it. Components are
+independent only because no *active* clause joins them; a hidden clause could be falsified by
+assigning a variable of component `A` and thereby force a variable of component `B`. Worse, a
+component could be reported UNSAT on the strength of a clause the key does not mention, and that
+verdict would then be reused at a node where the clause is absent.
+
+So learned clauses are ordinary clauses: in the occurrence lists, in the components, and in the
+keys. The soundness argument of §2 is unchanged, because it only ever depended on the key naming
+the active clause set — not on where those clauses came from. The hit rate is what pays, and the
+benchmark tables report it.
+
+### The design
+
+```
+on conflict at level d:
+    derive a clause by first-UIP resolution           # search/state.rs
+    if it is longer than max_learned_clause_size: discard it, backtrack chronologically
+    else append it to the database and backjump to its assertion level
+```
+
+Three things are specific to this solver:
+
+**(a) Resolution stops at pure literals.** Pure literal elimination assigns a variable with no
+reason clause: purity preserves satisfiability but is not an implication. So a level can carry
+several reason-less assignments, unlike a textbook CDCL solver. Resolution treats each as it
+treats a decision — it stops and keeps the literal — which leaves the derived clause a valid
+resolvent but not always *asserting*. When it is not, no backjump is justified and the search
+backtracks one level.
+
+**(b) Backjumping travels up the call stack.** One recursive frame per component, one decision
+level per polarity. A frame deriving a clause that asserts higher up returns `Answer::Backjump`
+and each frame on the way out closes its own level; the frame owning the target level keeps its
+level, discards the components it had split off, propagates the new clause, and splits again.
+
+**(c) Clauses are never deleted, and long ones are never stored.** Keys name clauses by index, so
+recycling an index would change what an existing entry means; the database is capped instead.
+And propagation is by counters, not watched literals (§4), so a stored clause costs work on every
+assignment to every variable it mentions — where a watched-literal solver would ignore it until
+one of two literals is touched. That makes long clauses uniquely bad value here, which is why
+they are discarded rather than kept. The size limit was chosen by measurement over the benchmark
+suite, not by taste.
+
+### Prediction, recorded before the benchmark run
+
+Learning should transform the structured unsatisfiable families — `aim`, `parity` — where the
+search currently rediscovers the same contradiction along every branch. It should do very little
+on the families that already decompose well, because those are not conflict-bound. And on random
+3-SAT at 250 variables it may well *lose*, because that is where derived clauses are longest and
+the counter-based propagation is most exposed. If so, the size limit is the dial that decides it,
+and the README will report the sweep rather than the best column.

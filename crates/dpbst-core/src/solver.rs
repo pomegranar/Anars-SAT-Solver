@@ -201,6 +201,9 @@ pub fn solve_here(cnf: &Cnf, config: &Config) -> SolveResult {
 
     let outcome = match answer {
         Answer::Unsat => Outcome::Unsat,
+        // Every backjump is absorbed by the frame that owns its target level, and the root owns
+        // level zero, so one can never escape the search.
+        Answer::Backjump(level) => unreachable!("backjump to level {level} escaped the search"),
         Answer::Aborted => Outcome::Unknown(if config.timeout.is_some() {
             AbortReason::Timeout
         } else {
@@ -304,23 +307,26 @@ mod tests {
             for bucket in BucketKind::ALL {
                 for heuristic in Heuristic::ALL {
                     for cache in [true, false] {
-                        for pure_literals in [true, false] {
-                            for preprocess in [true, false] {
-                                let c = Config {
-                                    bucket,
-                                    heuristic,
-                                    cache,
-                                    pure_literals,
-                                    preprocess,
-                                    ..Config::default()
-                                };
-                                assert_eq!(
-                                    verdict(f, &c),
-                                    baseline,
-                                    "instance {i} disagreed with bucket={bucket} \
-                                     heuristic={heuristic} cache={cache} \
-                                     pure={pure_literals} pre={preprocess}"
-                                );
+                        for learn in [true, false] {
+                            for pure_literals in [true, false] {
+                                for preprocess in [true, false] {
+                                    let c = Config {
+                                        bucket,
+                                        heuristic,
+                                        cache,
+                                        learn,
+                                        pure_literals,
+                                        preprocess,
+                                        ..Config::default()
+                                    };
+                                    assert_eq!(
+                                        verdict(f, &c),
+                                        baseline,
+                                        "instance {i} disagreed with bucket={bucket} \
+                                         heuristic={heuristic} cache={cache} learn={learn} \
+                                         pure={pure_literals} pre={preprocess}"
+                                    );
+                                }
                             }
                         }
                     }
@@ -386,10 +392,13 @@ mod tests {
             ]);
         }
 
-        // Pure literals would set `a` outright and the block would only ever be seen once.
+        // Pure literals would set `a` outright and the block would only ever be seen once, and
+        // learning would settle the block from a derived clause rather than revisit it. Both are
+        // switched off so that what is measured is the memo.
         let config = Config {
             preprocess: false,
             pure_literals: false,
+            learn: false,
             heuristic: Heuristic::Static,
             ..Config::default()
         };
@@ -419,6 +428,146 @@ mod tests {
             stats.nodes,
             plain.nodes
         );
+    }
+
+    /// The point of learning: a conflict analysed once must not have to be rediscovered. On an
+    /// instance whose contradiction hangs off a wide clause, the difference is not marginal.
+    #[test]
+    fn learning_cuts_the_search_down() {
+        // Every literal of the wide clause implies the same unsatisfiable block, so without
+        // learning each of its branches rediscovers the same contradiction from scratch.
+        let mut f = Cnf::new(0);
+        let width = 12_i32;
+        let wide: Vec<i32> = (1..=width).collect();
+        f.add_dimacs_clause(&wide);
+        for i in 1..=width {
+            f.add_dimacs_clause(&[-i, width + 1]);
+        }
+        let (u, v, w) = (width + 2, width + 3, width + 4);
+        for mask in 0..8_i32 {
+            f.add_dimacs_clause(&[
+                -(width + 1),
+                if mask & 1 == 0 { u } else { -u },
+                if mask & 2 == 0 { v } else { -v },
+                if mask & 4 == 0 { w } else { -w },
+            ]);
+        }
+
+        let base = Config {
+            preprocess: false,
+            pure_literals: false,
+            heuristic: Heuristic::Static,
+            ..Config::default()
+        };
+        let learned = solve_here(&f, &base);
+        let plain = solve_here(
+            &f,
+            &Config {
+                learn: false,
+                ..base.clone()
+            },
+        );
+        assert!(matches!(learned.outcome, Outcome::Unsat));
+        assert!(matches!(plain.outcome, Outcome::Unsat));
+
+        let with = learned.stats.search.expect("search ran");
+        let without = plain.stats.search.expect("search ran");
+        assert!(with.learned > 0, "some clause should have been derived");
+        assert!(
+            with.nodes < without.nodes,
+            "learning should save work: {} nodes with, {} without",
+            with.nodes,
+            without.nodes
+        );
+    }
+
+    /// Adding derived clauses must not lose a model. Checking that a clause is implied by the
+    /// formula is as expensive as solving, so this checks the consequence that matters.
+    #[test]
+    fn learning_does_not_lose_models() {
+        let mut f = Cnf::new(0);
+        for i in 1..=14_i32 {
+            f.add_dimacs_clause(&[i, i % 14 + 1, -((i + 4) % 14 + 1)]);
+            f.add_dimacs_clause(&[-i, (i + 2) % 14 + 1]);
+        }
+        for learn in [true, false] {
+            let r = solve_here(
+                &f,
+                &Config {
+                    learn,
+                    preprocess: false,
+                    ..Config::default()
+                },
+            );
+            assert!(matches!(r.outcome, Outcome::Sat(_)), "learn={learn}");
+            r.verify(&f)
+                .expect("model must satisfy the original formula");
+        }
+    }
+
+    /// A derived clause spans whatever variables the conflict touched, which can cut across the
+    /// component it was found in. The memo keys on active clause indices, so those clauses have
+    /// to appear in the component and in the key — otherwise a verdict is reused where it does
+    /// not hold. This is the test that would catch that.
+    #[test]
+    fn learning_and_the_memo_agree_on_decomposable_formulas() {
+        // Blocks that decompose, tied together by two long clauses so that a conflict inside one
+        // block derives a clause mentioning another.
+        let mut f = Cnf::new(0);
+        for block in 0..5_i32 {
+            let b = block * 4;
+            f.add_dimacs_clause(&[b + 1, b + 2, b + 3]);
+            f.add_dimacs_clause(&[-(b + 1), -(b + 2)]);
+            f.add_dimacs_clause(&[-(b + 2), -(b + 3)]);
+            f.add_dimacs_clause(&[-(b + 1), -(b + 3), b + 4]);
+            f.add_dimacs_clause(&[-(b + 4), b + 2]);
+        }
+        f.add_dimacs_clause(&[1, 5, 9, 13, 17]);
+        f.add_dimacs_clause(&[-1, -5, -9]);
+
+        let mut verdicts = Vec::new();
+        for learn in [true, false] {
+            for cache in [true, false] {
+                let r = solve_here(
+                    &f,
+                    &Config {
+                        learn,
+                        cache,
+                        preprocess: false,
+                        ..Config::default()
+                    },
+                );
+                r.verify(&f).expect("model must satisfy");
+                verdicts.push((
+                    format!("learn={learn} cache={cache}"),
+                    matches!(r.outcome, Outcome::Sat(_)),
+                ));
+            }
+        }
+        let first = verdicts[0].1;
+        for (label, verdict) in &verdicts {
+            assert_eq!(*verdict, first, "{label} disagreed");
+        }
+    }
+
+    /// Discarding long derived clauses is a performance decision, not a semantic one: every
+    /// limit, down to one that keeps nothing at all, must give the same verdict.
+    #[test]
+    fn the_learned_clause_size_limit_does_not_change_verdicts() {
+        let mut f = Cnf::new(0);
+        for i in 1..=13_i32 {
+            f.add_dimacs_clause(&[i, -(i % 13 + 1), (i + 3) % 13 + 1]);
+            f.add_dimacs_clause(&[-i, i % 13 + 1, -((i + 5) % 13 + 1)]);
+            f.add_dimacs_clause(&[-i, -(i % 13 + 1), -((i + 7) % 13 + 1)]);
+        }
+        let baseline = verdict(&f, &Config::default());
+        for limit in [1, 2, 3, 5, 12, 0] {
+            let c = Config {
+                max_learned_clause_size: limit,
+                ..Config::default()
+            };
+            assert_eq!(verdict(&f, &c), baseline, "size limit {limit} disagreed");
+        }
     }
 
     #[test]

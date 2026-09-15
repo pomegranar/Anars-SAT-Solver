@@ -10,9 +10,9 @@ use clap::{ArgAction, Parser};
 use dpbst_core::cache::BucketKind;
 use dpbst_core::cnf::Model;
 use dpbst_core::config::{Algorithm, Config};
+use dpbst_core::dimacs;
 use dpbst_core::search::heuristic::Heuristic;
 use dpbst_core::solver::{Outcome, SolveResult, solve};
-use dpbst_core::dimacs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -51,6 +51,19 @@ struct Cli {
     /// Entries per bucket the memo tolerates before growing the table.
     #[arg(long, value_name = "N", default_value_t = 4)]
     target_load: usize,
+
+    /// Disable clause learning, leaving chronological backtracking.
+    #[arg(long, action = ArgAction::SetTrue)]
+    no_learn: bool,
+
+    /// Discard derived clauses longer than this, backtracking chronologically instead.
+    /// Zero keeps every clause.
+    #[arg(long, value_name = "N", default_value_t = dpbst_core::config::DEFAULT_MAX_LEARNED_CLAUSE_SIZE)]
+    max_learned_clause_size: usize,
+
+    /// Stop learning once derived clauses hold this many literals in total.
+    #[arg(long, value_name = "N", default_value_t = dpbst_core::config::DEFAULT_MAX_LEARNED_LITERALS)]
+    max_learned_literals: usize,
 
     /// Disable pure literal elimination.
     #[arg(long, action = ArgAction::SetTrue)]
@@ -94,6 +107,9 @@ impl Cli {
             cache: !self.no_cache,
             cache_budget_bytes: self.cache_mb.saturating_mul(1024 * 1024),
             target_load: self.target_load.max(1),
+            learn: !self.no_learn,
+            max_learned_clause_size: self.max_learned_clause_size,
+            max_learned_literals: self.max_learned_literals,
             pure_literals: !self.no_pure_literals,
             preprocess: !self.no_preprocess,
             timeout: self.timeout.map(Duration::from_secs_f64),
@@ -277,6 +293,23 @@ fn write_stats<W: Write>(out: &mut W, result: &SolveResult) -> io::Result<()> {
         writeln!(out, "c propagations         : {}", search.propagations)?;
         writeln!(out, "c components           : {}", search.components)?;
         writeln!(out, "c pure literals        : {}", search.pure_literals)?;
+        writeln!(
+            out,
+            "c learned clauses      : {} kept, {} too long ({} literals, {:.1} mean)",
+            search.learned,
+            search.discarded,
+            search.learned_literals,
+            if search.learned == 0 {
+                0.0
+            } else {
+                search.learned_literals as f64 / search.learned as f64
+            }
+        )?;
+        writeln!(
+            out,
+            "c backjumps            : {} ({} decision levels skipped)",
+            search.backjumps, search.levels_skipped
+        )?;
         writeln!(out, "c max depth            : {}", search.max_depth)?;
 
         let c = &search.cache;
@@ -352,6 +385,7 @@ fn json_stats(result: &SolveResult, cli: &Cli) -> String {
     field(&mut json, "bucket", format!("\"{}\"", cli.bucket));
     field(&mut json, "heuristic", format!("\"{}\"", cli.heuristic));
     field(&mut json, "cache", (!cli.no_cache).to_string());
+    field(&mut json, "learn", (!cli.no_learn).to_string());
     field(
         &mut json,
         "elapsed_s",
@@ -374,6 +408,19 @@ fn json_stats(result: &SolveResult, cli: &Cli) -> String {
         field(&mut json, "conflicts", search.conflicts.to_string());
         field(&mut json, "propagations", search.propagations.to_string());
         field(&mut json, "components", search.components.to_string());
+        field(&mut json, "learned", search.learned.to_string());
+        field(&mut json, "discarded", search.discarded.to_string());
+        field(
+            &mut json,
+            "learned_literals",
+            search.learned_literals.to_string(),
+        );
+        field(&mut json, "backjumps", search.backjumps.to_string());
+        field(
+            &mut json,
+            "levels_skipped",
+            search.levels_skipped.to_string(),
+        );
         field(&mut json, "max_depth", search.max_depth.to_string());
         field(&mut json, "cache_lookups", search.cache.lookups.to_string());
         field(&mut json, "cache_hits", search.cache.hits.to_string());

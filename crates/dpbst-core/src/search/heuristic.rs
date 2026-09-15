@@ -5,10 +5,12 @@
 //! already walked those clauses; the scan is over a subproblem, not the whole formula.
 //!
 //! Notably absent is VSIDS, the heuristic that made modern CDCL solvers fast. VSIDS scores
-//! variables by how often they appear in *learned* clauses, and this solver does not learn any.
-//! The literature's answer for caching solvers is VSADS (Sang, Beame and Kautz), which blends
-//! VSIDS with occurrence counting; it is listed as future work in the README rather than
-//! pretended at here.
+//! variables by how often they appear in *recently learned* clauses. The solver does learn
+//! clauses now — see [`crate::search`] — so the prerequisite is met and the heuristic simply is
+//! not implemented: everything here scores the component in front of it, not the run so far. The
+//! literature's answer for caching solvers is VSADS (Sang, Beame and Kautz), which blends VSIDS
+//! with occurrence counting; it is listed as future work in the README rather than pretended at
+//! here.
 
 use crate::lit::{Lit, Var};
 use crate::search::component::{ComponentRef, ComponentStore};
