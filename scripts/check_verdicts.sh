@@ -44,10 +44,17 @@ for spec in "uf20-91:10" "uf50-218:10" "uf75-325:10" "uf100-430:10" \
   dir="$CLEAN/$suite"
   [ -d "$dir" ] || { echo "skipping $suite (not fetched)"; continue; }
 
-  mapfile -t files < <(ls "$dir"/*.cnf 2>/dev/null | head -"$LIMIT")
-  checked=$((checked + ${#files[@]}))
-  printf '  %-16s %4d instances, %s jobs\n' "$suite" "${#files[@]}" "$JOBS"
-  printf '%s\n' "${files[@]}" \
+  # Not mapfile: macOS ships bash 3.2, which does not have it, and this script reported a
+  # cheerful "all 0 instances matched" for as long as it was used here.
+  files=$(ls "$dir"/*.cnf 2>/dev/null | head -"$LIMIT")
+  count=$(printf '%s\n' "$files" | grep -c . || true)
+  if [ "$count" -eq 0 ]; then
+    echo "no instances found in $dir" >&2
+    exit 2
+  fi
+  checked=$((checked + count))
+  printf '  %-16s %4d instances, %s jobs\n' "$suite" "$count" "$JOBS"
+  printf '%s\n' "$files" \
     | xargs -P "$JOBS" -I{} bash -c 'check_one "$@"' _ {} "$expected" >>"$failures"
 done
 
@@ -59,4 +66,8 @@ if [ -s "$failures" ]; then
   exit 1
 fi
 rm -f "$failures"
+if [ "$checked" -eq 0 ]; then
+  echo "no instances were checked at all; this is a failure, not a pass" >&2
+  exit 2
+fi
 echo "all $checked instances matched their expected verdict"

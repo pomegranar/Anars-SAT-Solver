@@ -1,4 +1,6 @@
 /target
+# criterion writes its reports under the crate it was invoked from, not the workspace root
+crates/*/target/
 **/*.rs.bk
 
 # Reference solvers: sources + built binaries, fetched by scripts/fetch_tools.sh
